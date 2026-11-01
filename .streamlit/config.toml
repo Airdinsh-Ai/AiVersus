@@ -1,0 +1,23 @@
+# Dunkles Theme laut Design-Vorlage (https://claude.ai/artifact/6e15DNnM9S7bU5XDMBycpn):
+# fast schwarzer Grund, Bernstein als einziger Akzent, IBM Plex Sans/Mono.
+[theme]
+base = "dark"
+primaryColor = "#F2B34A"
+backgroundColor = "#0E1013"
+secondaryBackgroundColor = "#14171C"
+textColor = "#E7E9EC"
+borderColor = "#252A31"
+linkColor = "#F2B34A"
+codeBackgroundColor = "#14171C"
+codeTextColor = "#C9CED4"
+font = "IBM Plex Sans:https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+codeFont = "IBM Plex Mono:https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
+baseRadius = "12px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = true
+# Feste Modellfarben (dieselbe Palette wie app.py MODEL_COLOR_PALETTE) für Diagramme.
+chartCategoricalColors = [
+    "#6CA8FF", "#F59E4C", "#4CC9B0", "#D97757", "#9B8AFB",
+    "#E85D75", "#7FD858", "#F2B34A", "#5AC8FA", "#C77DFF",
+]

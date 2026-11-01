@@ -12,6 +12,9 @@ Dieser Abschnitt wird während der Nacht laufend ergänzt (neueste Einträge obe
 innerhalb des Abschnitts).
 
 ### LIVE-TEST OFFEN (Checkliste für morgen)
+- [ ] Schritt 6 (Design): Theme/CSS nur auf Fehlerfreiheit geprüft (App startet,
+  kein Streamlit-Theme-Fehler im Log), nicht visuell im Browser verglichen mit
+  der Design-Vorlage (Farben/Schriftarten/Abstände) - das geht nur per Augenschein.
 - [ ] Schritt 5 (RAG): volle Kette Datei-Upload (echter st.file_uploader) →
   Index aufbauen → Benchmark mit injected_context=True → Chunks auf der Karte.
   Nur die Bausteine einzeln getestet (RagIndex add_document/retrieve mit

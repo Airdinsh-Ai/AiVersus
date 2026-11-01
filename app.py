@@ -56,6 +56,15 @@ from storage import RunStore
 st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
 store = RunStore()
 
+# Buttons/Eingaben mit Mindesthöhe 44px (Barrierefreiheit, siehe Design-Vorlage) - [theme] in
+# .streamlit/config.toml deckt Farben/Fonts/Radien ab, aber keine Mindesthöhen für Touch-Targets.
+st.markdown(
+    "<style>"
+    ".stButton button, .stDownloadButton button, .stLinkButton a { min-height: 44px; }"
+    "</style>",
+    unsafe_allow_html=True,
+)
+
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierungs-Warteschlange
 MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
@@ -514,6 +523,9 @@ else:
         if not rag_ready:
             st.sidebar.caption("Noch kein Dokument indexiert - der Lauf geht ohne Kontext.")
 
+st.sidebar.divider()
+st.sidebar.caption("NVIDIA Build · Key nur in dieser Sitzung, nirgends gespeichert.")
+
 # ---------------- Modelle ----------------
 st.title("AiVersus")
 st.subheader("Modelle")
@@ -957,9 +969,13 @@ def _render_result_card(row: dict) -> str:
         + (f" (davon {row['reasoning_tokens']} Reasoning)" if row.get("reasoning_tokens") else "")
         + f" · {_fmt(row.get('tokens_per_s'), ' Tok/s', 1)} · {_fmt_cost(row.get('cost_usd'))}"
     )
-    status_html = "" if row["ok"] else "<div style='color:#E85D75;font-weight:600;margin-bottom:6px;'>Fehler</div>"
+    pill = "display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;margin:0 0 6px;"
+    status_html = (
+        "" if row["ok"]
+        else f"<span style='{pill}background:#3A1F22;color:#E85D75;'>Fehler</span><br>"
+    )
     if row.get("is_best"):
-        status_html += "<div style='color:#F2B34A;font-weight:600;margin-bottom:6px;'>★ Beste Antwort</div>"
+        status_html += f"<span style='{pill}background:#2A2314;color:#F2B34A;font-weight:600;'>★ Beste Antwort</span><br>"
     if row.get("stars"):
         status_html += f"<div style='color:#F2B34A;margin-bottom:6px;'>{'★' * row['stars']}{'☆' * (5 - row['stars'])}</div>"
     reasoning_html = ""
@@ -985,7 +1001,8 @@ def _render_result_card(row: dict) -> str:
         f"<strong>{html.escape(row['model_id'])}</strong>"
         "</div>"
         f"{status_html}"
-        f"<div style=\"font-size:13px;color:#9AA3AE;margin-bottom:8px;\">{metrics}</div>"
+        f"<div style=\"font-size:13px;color:#9AA3AE;margin-bottom:8px;"
+        f"font-family:'IBM Plex Mono',monospace;\">{metrics}</div>"
         f"<div style=\"white-space:pre-wrap;font-size:14px;\">{html.escape(row['response'] or '')}</div>"
         f"{reasoning_html}"
         f"{rag_html}"
