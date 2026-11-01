@@ -74,8 +74,16 @@ class RunStore:
         return df
 
     def known_models(self) -> list:
+        """Modelle mit mindestens einem erfolgreichen Lauf - reine Fehlschläge taugen nicht als
+
+        Timeline-Auswahl (es gibt dafür ja keine Latenz/Tokens/Kosten zum Anzeigen).
+        """
         with sqlite3.connect(self.db_path) as conn:
-            return [r[0] for r in conn.execute("SELECT DISTINCT model_id FROM results ORDER BY model_id")]
+            return [
+                r[0] for r in conn.execute(
+                    "SELECT DISTINCT model_id FROM results WHERE ok = 1 ORDER BY model_id"
+                )
+            ]
 
     def run_count(self) -> int:
         with sqlite3.connect(self.db_path) as conn:

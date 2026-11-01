@@ -38,7 +38,13 @@ from openai import (
 )
 
 from chat_client import call_chat_streaming
-from models import SEPARATOR, build_dropdown_options, fetch_chat_models, pick_quick_test_candidates
+from models import (
+    SEPARATOR,
+    build_dropdown_options,
+    fetch_chat_models,
+    fetch_chat_models_by_recency,
+    pick_quick_test_candidates,
+)
 from pricing import PRICING_USD_PER_1M_TOKENS
 from rag import RagIndex, build_prompt
 from storage import RunStore
@@ -77,6 +83,8 @@ if "selected_models" not in st.session_state:
     st.session_state.selected_models = []
 if "model_prices" not in st.session_state:
     st.session_state.model_prices = {}
+if "last_successful_test_model" not in st.session_state:
+    st.session_state.last_successful_test_model = None
 
 
 def _original_message(e: Exception) -> str:
@@ -194,7 +202,9 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
             st.write("**Alle Chat-Modell-IDs:**")
             st.code("\n".join(sorted(chat_models)))
 
-        candidates = pick_quick_test_candidates(chat_models, limit=5)
+        chat_models_by_recency = fetch_chat_models_by_recency(client)
+        preferred = [st.session_state.last_successful_test_model] if st.session_state.last_successful_test_model else []
+        candidates = pick_quick_test_candidates(chat_models_by_recency, limit=5, preferred=preferred)
         if not candidates:
             st.sidebar.warning("Kein passendes Modell im Katalog gefunden.")
         else:
@@ -238,6 +248,7 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
             status_box.empty()
             text_box.empty()
             if result.ok:
+                st.session_state.last_successful_test_model = test_model
                 st.sidebar.success(f"Testaufruf an {test_model} beantwortet ({result.duration_s} s).")
                 if len(tried) > 1:
                     st.sidebar.caption(f"Nicht verfügbar probiert: {', '.join(tried[:-1])}")

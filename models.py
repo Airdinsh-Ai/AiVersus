@@ -15,6 +15,8 @@ Bewusst keine fest eingetragenen Modell-IDs: NVIDIA Build entfernt/ersetzt Model
 """
 
 import re
+import time as _time
+from datetime import datetime
 
 from openai import OpenAI
 
@@ -27,7 +29,6 @@ EXCLUDE_PATTERNS = (
     "parse", "reward",
     "ocr", "caption",
 )
-QUICK_TEST_HINTS = ("8b", "3b", "mini", "small", "lite", "nano")
 SEPARATOR = "──────────"
 
 # Anzeigename -> (erwartete Namespace-Präfixe "org/", mögliche Namensmuster in der Modell-ID).
@@ -73,6 +74,38 @@ def fetch_chat_models(client: OpenAI) -> list:
     return sorted(m.id for m in response.data if _is_chat_model(m.id))
 
 
+def _shutdown_timestamp(model) -> float | None:
+    shutdown = getattr(model, "shutdown_date", None)
+    if not shutdown:
+        return None
+    try:
+        return datetime.fromisoformat(str(shutdown).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def fetch_chat_models_by_recency(client: OpenAI) -> list:
+    """Chat-Modell-IDs für den Verbindungstest, aussichtsreichste zuerst.
+
+    Kleine/alte Modell-Namen (meist die "schnellen") sind auf NVIDIA Build oft längst
+    abgeschaltet - Namensmuster wie "8b"/"mini" sind daher kein guter Hinweis auf
+    Erreichbarkeit. Stattdessen: Modelle mit einem bereits vergangenen `shutdown_date`
+    ans Ende, sonst nach `created` absteigend (neuere Modelle zuerst) - sofern NVIDIA
+    Build diese Felder befüllt; sind sie leer, ist das Ergebnis einfach unsortiert.
+    """
+    now = _time.time()
+    response = client.models.list()
+    entries = []
+    for m in response.data:
+        if not _is_chat_model(m.id):
+            continue
+        shutdown_ts = _shutdown_timestamp(m)
+        already_shutdown = shutdown_ts is not None and shutdown_ts < now
+        entries.append((m.id, already_shutdown, getattr(m, "created", 0) or 0))
+    entries.sort(key=lambda t: (t[1], -t[2]))
+    return [model_id for model_id, _, _ in entries]
+
+
 def latest_per_family(chat_models: list) -> dict:
     """{Anzeigename: Modell-ID} - je Top-Familie das laut Namensmuster neueste Modell.
 
@@ -107,28 +140,30 @@ def build_dropdown_options(chat_models: list) -> list:
     return top_sorted + [SEPARATOR] + rest_sorted
 
 
-def pick_quick_test_candidates(chat_models: list, limit: int = 5) -> list:
-    """Bis zu `limit` kandidaten für den Verbindungstest, kleine/schnelle Modelle zuerst.
+# Kein Anspruch auf Dauerhaftigkeit - nur ein bevorzugter Kandidat, falls er noch im
+# Katalog steht. Verschwindet er, fällt die Auswahl einfach auf die Aktualitäts-Sortierung
+# zurück, ohne dass das irgendwo angepasst werden müsste.
+KNOWN_GOOD_FALLBACKS = ["deepseek-ai/deepseek-v4.1-flash"]
 
-    Mehrere Kandidaten statt einer festen ID: Taucht ein Modell im Katalog auf, ist aber
-    für den Account nicht freigeschaltet (404), probiert der Aufrufer den nächsten.
+
+def pick_quick_test_candidates(chat_models_by_recency: list, limit: int = 5, preferred: list = ()) -> list:
+    """Bis zu `limit` Kandidaten für den Verbindungstest.
+
+    Reihenfolge: zuerst `preferred` (z.B. das zuletzt erfolgreiche Modell dieser Sitzung),
+    dann KNOWN_GOOD_FALLBACKS, dann der Rest nach Aktualität (siehe fetch_chat_models_by_recency).
+    Mehrere Kandidaten statt einer festen ID: Taucht ein Modell im Katalog auf, ist aber für
+    den Account nicht freigeschaltet (404/410), probiert der Aufrufer den nächsten.
     """
-    if not chat_models:
+    if not chat_models_by_recency:
         return []
+    available = set(chat_models_by_recency)
     ranked, seen = [], set()
-    for hint in QUICK_TEST_HINTS:
-        for m in sorted(m for m in chat_models if hint in m.lower()):
-            if m not in seen:
-                ranked.append(m)
-                seen.add(m)
-    for m in sorted(chat_models):
+    for m in list(preferred) + KNOWN_GOOD_FALLBACKS:
+        if m in available and m not in seen:
+            ranked.append(m)
+            seen.add(m)
+    for m in chat_models_by_recency:
         if m not in seen:
             ranked.append(m)
             seen.add(m)
     return ranked[:limit]
-
-
-def pick_quick_test_model(chat_models: list) -> str | None:
-    """Ein kleines/schnelles Modell aus dem Katalog für den Verbindungstest - keine feste ID."""
-    candidates = pick_quick_test_candidates(chat_models, limit=1)
-    return candidates[0] if candidates else None
