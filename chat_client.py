@@ -16,13 +16,20 @@ ersten Token mehrere Minuten Warteschlange haben kann, danach aber normal stream
 Reasoning-Modelle (z.B. gpt-oss) schicken ihr "Denken" oft als eigenes Feld
 (delta.reasoning_content/delta.reasoning), nicht als delta.content - das zählt
 hier ebenfalls als Lebenszeichen und wird separat in `reasoning` gesammelt.
+
+Nicht jedes NVIDIA-Build-Modell versteht jeden OpenAI-Parameter (z.B. seed oder
+stream_options). Ein 400 mit einem erkannten Parameter führt zu genau einem
+Retry ohne diesen Parameter - ChatCallResult.used_params/dropped_param zeigen,
+was am Ende tatsächlich gesendet wurde.
 """
 
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from openai import BadRequestError
 
 
 @dataclass
@@ -38,31 +45,41 @@ class ChatCallResult:
     duration_s: float
     ttft_s: Optional[float]  # Time To First Token - enthält die NVIDIA-Warteschlange
     generation_s: Optional[float]  # duration_s - ttft_s, für eine unverzerrte Tokens/s-Rechnung
+    used_params: dict = field(default_factory=dict)  # tatsächlich gesendete Parameter (inkl. stream_options)
+    dropped_param: Optional[str] = None  # gesetzt, wenn ein Parameter nach 400 entfernt wurde
 
 
-def call_chat_streaming(
-    client,
-    model_id: str,
-    messages: list,
-    on_progress: Optional[Callable[[float, str, bool], None]] = None,
-    first_token_timeout_s: float = 300.0,
-    inter_token_timeout_s: float = 60.0,
-    **params,
+def _error_message_and_param(e: Exception) -> tuple:
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or ""), error.get("param")
+    return str(e), None
+
+
+def _find_offending_param(e: Exception, sent_params: dict) -> Optional[str]:
+    """Welcher gesendete Parameter laut 400-Antwort abgelehnt wurde - None, wenn keiner erkannt wird."""
+    message, param_field = _error_message_and_param(e)
+    haystack = f"{param_field or ''} {message}".lower()
+    for key in sent_params:
+        names = ["stream_options", "include_usage"] if key == "stream_options" else [key]
+        if any(name.lower() in haystack for name in names):
+            return key
+    return None
+
+
+def _call_once(
+    client, model_id: str, messages: list,
+    on_progress: Optional[Callable[[float, str, bool], None]],
+    first_token_timeout_s: float, inter_token_timeout_s: float,
+    params: dict,
 ) -> ChatCallResult:
-    """Streamt eine Chat-Antwort in einem Hintergrund-Thread.
-
-    `on_progress(elapsed_s, partial_text, got_first_token)` wird regelmäßig im
-    Hauptthread aufgerufen, solange der Call läuft - für eine Live-Anzeige
-    ("in der Warteschlange" vor dem ersten Token, danach "wartet seit X s").
-    """
     q: "queue.Queue" = queue.Queue()
 
     def producer() -> None:
         try:
-            stream = client.chat.completions.create(
-                model=model_id, messages=messages, stream=True,
-                stream_options={"include_usage": True}, **params,
-            )
+            stream = client.chat.completions.create(model=model_id, messages=messages, stream=True, **params)
             for chunk in stream:
                 q.put(("chunk", chunk))
             q.put(("done", None))
@@ -151,8 +168,45 @@ def call_chat_streaming(
     if error is not None:
         return ChatCallResult(
             False, content, reasoning, None, None, None, finish_reason, error, duration_s, ttft_s, generation_s,
+            used_params=dict(params),
         )
     return ChatCallResult(
         True, content, reasoning, tokens_in, tokens_out, reasoning_tokens,
-        finish_reason, None, duration_s, ttft_s, generation_s,
+        finish_reason, None, duration_s, ttft_s, generation_s, used_params=dict(params),
     )
+
+
+def call_chat_streaming(
+    client,
+    model_id: str,
+    messages: list,
+    on_progress: Optional[Callable[[float, str, bool], None]] = None,
+    first_token_timeout_s: float = 300.0,
+    inter_token_timeout_s: float = 60.0,
+    **params,
+) -> ChatCallResult:
+    """Streamt eine Chat-Antwort in einem Hintergrund-Thread.
+
+    `on_progress(elapsed_s, partial_text, got_first_token)` wird regelmäßig im
+    Hauptthread aufgerufen, solange der Call läuft - für eine Live-Anzeige
+    ("in der Warteschlange" vor dem ersten Token, danach "wartet seit X s").
+
+    Lehnt NVIDIA Build einen Parameter mit 400 ab (nicht jedes Modell versteht
+    z.B. seed), wird genau einmal ohne diesen Parameter wiederholt.
+    """
+    attempt_params = dict(params)
+    attempt_params["stream_options"] = {"include_usage": True}
+
+    result = _call_once(client, model_id, messages, on_progress, first_token_timeout_s, inter_token_timeout_s, attempt_params)
+    if result.ok or not isinstance(result.error, BadRequestError):
+        return result
+
+    offending = _find_offending_param(result.error, attempt_params)
+    if offending is None:
+        return result
+
+    retry_params = dict(attempt_params)
+    retry_params.pop(offending, None)
+    retried = _call_once(client, model_id, messages, on_progress, first_token_timeout_s, inter_token_timeout_s, retry_params)
+    retried.dropped_param = offending
+    return retried

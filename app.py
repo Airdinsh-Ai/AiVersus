@@ -452,6 +452,20 @@ def _cost_usd(model_id: str, tokens_in, tokens_out) -> float:
     return round((tokens_in * price["input"] + tokens_out * price["output"]) / 1_000_000, 6)
 
 
+def _actual_sent_params(result) -> dict:
+    """Was tatsächlich gesendet wurde - nach einem 400-Retry kann das von der Vorgabe abweichen."""
+    if result is None:  # Fehler vor dem ersten Versuch (z.B. RAG-Retrieval) - nur die Absicht bekannt
+        return {**sent_params_record, "dropped_param": None}
+    return {
+        "temperature": result.used_params.get("temperature"),
+        "top_p": result.used_params.get("top_p"),
+        "max_tokens": result.used_params.get("max_tokens"),
+        "seed": result.used_params.get("seed"),
+        "system_prompt": sent_params_record["system_prompt"],
+        "dropped_param": result.dropped_param,
+    }
+
+
 def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, call_start: float) -> dict:
     row = {
         "run_id": run_id,
@@ -461,7 +475,7 @@ def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, cal
         "technique": prompt["technique"],
         "injected_context": False,
         "retrieved_sources": [],
-        "sent_params": dict(sent_params_record),
+        "sent_params": _actual_sent_params(result),
     }
     if exc is not None:
         duration = round(time.perf_counter() - call_start, 3)
@@ -487,6 +501,9 @@ def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, cal
                    reasoning_tokens=None, ttft_s=result.ttft_s, generation_s=result.generation_s)
 
     status = "OK" if row["ok"] else f"FEHLER: {row['response']}"
+    dropped = row["sent_params"].get("dropped_param")
+    if dropped:
+        status += f" (nach 400 ohne Parameter '{dropped}' wiederholt)"
     print(
         f"[{datetime.now(timezone.utc).isoformat()}] ENDE {model_id} prompt={prompt['id']} "
         f"dauer={duration}s status={status}",
@@ -554,12 +571,20 @@ if st.session_state.results:
     st.subheader("Ergebnisse")
     last_params = st.session_state.results[-1]["sent_params"]
     st.caption(
-        "Gesendete Parameter: temperature={temperature}, top_p={top_p}, max_tokens={max_tokens}, "
+        "Gesendete Parameter (Vorgabe): temperature={temperature}, top_p={top_p}, max_tokens={max_tokens}, "
         "seed={seed}, System-Prompt={system_prompt}".format(
             **{**last_params, "seed": last_params["seed"] if last_params["seed"] is not None else "nicht gesetzt",
                "system_prompt": "gesetzt" if last_params["system_prompt"] else "nicht gesetzt"},
         )
     )
+    dropped_by_model = {
+        r["model_id"] for r in st.session_state.results if r["sent_params"].get("dropped_param")
+    }
+    if dropped_by_model:
+        st.caption(
+            "Bei manchen Modellen wurde nach einem 400-Fehler ein Parameter entfernt und ohne ihn "
+            f"wiederholt - betroffen: {', '.join(sorted(dropped_by_model))}. Details pro Zeile im Export (JSON)."
+        )
     df = pd.DataFrame(st.session_state.results)
     st.dataframe(
         df[["model_id", "prompt_id", "technique", "ok",
