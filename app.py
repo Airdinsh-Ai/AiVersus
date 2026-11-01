@@ -31,6 +31,7 @@ from openai import (
     RateLimitError,
 )
 
+from models import SEPARATOR, build_dropdown_options, fetch_chat_models, pick_quick_test_model
 from pricing import estimate_cost_usd
 from rag import RagIndex, build_prompt
 from storage import RunStore
@@ -39,11 +40,6 @@ st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
 store = RunStore()
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-# Platzhalter-Katalog - Schritt 3 ersetzt das durch eine Live-Abfrage via models.list().
-MODELS = [
-    "meta/llama-3.1-8b-instruct",
-    "mistralai/mixtral-8x7b-instruct-v0.1",
-]
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
 
 if "prompts" not in st.session_state:
@@ -55,24 +51,45 @@ if "results" not in st.session_state:
     st.session_state.results = []
 
 
+def _original_message(e: Exception) -> str:
+    """Die Original-Fehlermeldung aus dem Response-Body von NVIDIA Build, falls vorhanden."""
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if body.get("message"):
+            return str(body["message"])
+    return str(e)
+
+
 def describe_api_error(e: Exception) -> str:
-    """Lesbare deutsche Fehlermeldung statt Traceback in der UI."""
+    """Lesbare deutsche Fehlermeldung statt Traceback in der UI, inkl. Original-Meldung."""
+    detail = _original_message(e)
     if isinstance(e, AuthenticationError):
-        return "API-Key ungültig oder abgelehnt (401)."
+        return f"API-Key ungültig oder abgelehnt (401). NVIDIA Build: {detail}"
     if isinstance(e, RateLimitError):
-        return "Rate-Limit bei NVIDIA Build erreicht (429) - kurz warten und erneut versuchen."
+        return f"Rate-Limit bei NVIDIA Build erreicht (429) - kurz warten und erneut versuchen. NVIDIA Build: {detail}"
     if isinstance(e, NotFoundError):
-        return "Modell nicht gefunden (404) - Modell-ID in NVIDIA Build prüfen."
+        return f"Modell nicht gefunden (404) - Modell-ID in NVIDIA Build prüfen. NVIDIA Build: {detail}"
+    if isinstance(e, APIStatusError) and e.status_code == 410:
+        return f"Modell nicht mehr verfügbar (410) - bitte ein anderes Modell wählen. NVIDIA Build: {detail}"
     if isinstance(e, APIStatusError):
-        return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code})."
+        return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code}). NVIDIA Build: {detail}"
     if isinstance(e, APIError):
-        return "Verbindung zu NVIDIA Build fehlgeschlagen."
-    return "Unbekannter Fehler beim API-Aufruf."
+        return f"Verbindung zu NVIDIA Build fehlgeschlagen: {detail}"
+    return f"Unbekannter Fehler beim API-Aufruf: {detail}"
 
 
 @st.cache_resource
 def get_index(api_key: str) -> RagIndex:
     return RagIndex(api_key=api_key)
+
+
+@st.cache_data(ttl=300, show_spinner="Modellkatalog wird geladen ...")
+def _load_chat_models(api_key: str) -> list:
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
+    return fetch_chat_models(client)
 
 
 # ---------------- Sidebar: API-Key ----------------
@@ -88,40 +105,61 @@ nvidia_key = st.sidebar.text_input(
 # ---------------- Sidebar: Verbindungstest ----------------
 st.sidebar.divider()
 st.sidebar.subheader("Verbindungstest")
-st.sidebar.caption("Ein kurzer Testaufruf mit einem kleinen, schnellen Modell.")
+st.sidebar.caption("Lädt zuerst den Modellkatalog (prüft den Key), dann ein kurzer Testaufruf an ein kleines Modell daraus.")
 if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
-    test_model = "meta/llama-3.1-8b-instruct"
-    sent_params = {"model": test_model, "temperature": 0.2, "max_tokens": 20}
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key)
-    start = time.perf_counter()
     try:
-        resp = client.chat.completions.create(
-            model=sent_params["model"],
-            messages=[{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
-            temperature=sent_params["temperature"],
-            max_tokens=sent_params["max_tokens"],
-        )
-        latency = round(time.perf_counter() - start, 3)
-        choice = resp.choices[0]
-        usage = resp.usage
-        st.sidebar.success(f"Antwort erhalten ({latency} s).")
-        st.sidebar.write("**Antwort:**", choice.message.content)
-        st.sidebar.write("**Gesendete Parameter:**", sent_params)
-        st.sidebar.write(
-            "**usage (roh von NVIDIA Build):**",
-            {
-                "prompt_tokens": usage.prompt_tokens if usage else None,
-                "completion_tokens": usage.completion_tokens if usage else None,
-                "total_tokens": usage.total_tokens if usage else None,
-            },
-        )
-        st.sidebar.write("**finish_reason:**", choice.finish_reason)
+        chat_models = fetch_chat_models(client)  # ungecacht - der Test soll den Key gerade neu prüfen
     except Exception as e:
         st.sidebar.error(describe_api_error(e))
+    else:
+        st.sidebar.success(f"Key gültig - {len(chat_models)} Chat-Modelle verfügbar.")
+        test_model = pick_quick_test_model(chat_models)
+        if not test_model:
+            st.sidebar.warning("Kein passendes Modell im Katalog gefunden.")
+        else:
+            sent_params = {"model": test_model, "temperature": 0.2, "max_tokens": 20}
+            start = time.perf_counter()
+            try:
+                resp = client.chat.completions.create(
+                    model=sent_params["model"],
+                    messages=[{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
+                    temperature=sent_params["temperature"],
+                    max_tokens=sent_params["max_tokens"],
+                )
+                latency = round(time.perf_counter() - start, 3)
+                choice = resp.choices[0]
+                usage = resp.usage
+                st.sidebar.success(f"Testaufruf an {test_model} beantwortet ({latency} s).")
+                st.sidebar.write("**Antwort:**", choice.message.content)
+                st.sidebar.write("**Gesendete Parameter:**", sent_params)
+                st.sidebar.write(
+                    "**usage (roh von NVIDIA Build):**",
+                    {
+                        "prompt_tokens": usage.prompt_tokens if usage else None,
+                        "completion_tokens": usage.completion_tokens if usage else None,
+                        "total_tokens": usage.total_tokens if usage else None,
+                    },
+                )
+                st.sidebar.write("**finish_reason:**", choice.finish_reason)
+            except Exception as e:
+                st.sidebar.error(describe_api_error(e))
 
 # ---------------- Sidebar: Modelle ----------------
 st.sidebar.header("Modelle")
-selected = [m for m in MODELS if st.sidebar.checkbox(m, value=True, key=f"cb_{m}")]
+if not nvidia_key:
+    st.sidebar.caption("Trage deinen API-Key ein, um den Modellkatalog zu laden.")
+    selected = []
+else:
+    try:
+        chat_models = _load_chat_models(nvidia_key)
+    except Exception as e:
+        st.sidebar.error(describe_api_error(e))
+        chat_models = []
+    dropdown_options = build_dropdown_options(chat_models)
+    choices = [m for m in dropdown_options if m != SEPARATOR]
+    st.sidebar.caption(f"{len(choices)} Chat-Modelle geladen - Top 10 zuerst, dann der Rest alphabetisch.")
+    selected = st.sidebar.multiselect("Modelle", choices, default=choices[:5])
 
 # ---------------- Sidebar: RAG ----------------
 st.sidebar.header("RAG (optional)")
