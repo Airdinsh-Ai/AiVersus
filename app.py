@@ -89,6 +89,8 @@ if "last_successful_test_model" not in st.session_state:
     st.session_state.last_successful_test_model = None
 if "run" not in st.session_state:
     st.session_state.run = None
+if "last_run_message" not in st.session_state:
+    st.session_state.last_run_message = None
 
 
 def _original_message(e: Exception) -> str:
@@ -462,12 +464,31 @@ def _run_one_task(client, model_id, prompt, task_progress, progress_lock, cancel
     return result, exc, call_start
 
 
-def _cost_usd(model_id: str, tokens_in, tokens_out) -> float:
-    """Kosten nach den in der Modell-Liste eingetragenen Preisen - gilt nur für diesen Lauf."""
-    if tokens_in is None or tokens_out is None:
-        return 0.0
+def _cost_usd(model_id: str, tokens_in, tokens_out):
+    """Kosten nach den in der Modell-Liste eingetragenen Preisen - gilt nur für diesen Lauf.
+
+    None (nicht 0.0), wenn kein Preis eingetragen ist - unbekannt ist nicht dasselbe wie
+    kostenlos. Heuristik: 0.0/0.0 (der Vorgabewert ohne Treffer in pricing.py) gilt als
+    "kein Preis eingetragen"; sobald eines der beiden Felder > 0 ist, gilt der Preis als bekannt.
+    """
     price = st.session_state.model_prices.get(model_id, {"input": 0.0, "output": 0.0})
+    if price["input"] == 0.0 and price["output"] == 0.0:
+        return None
+    if tokens_in is None or tokens_out is None:
+        return None
     return round((tokens_in * price["input"] + tokens_out * price["output"]) / 1_000_000, 6)
+
+
+def _classify_outcome(result, exc) -> str:
+    """ok / timeout / abgebrochen / fehler - für die Live-Statuszeile, nicht nur "fertig"."""
+    error = exc if exc is not None else (None if result is None or result.ok else result.error)
+    if error is None:
+        return "ok"
+    if isinstance(error, StreamCancelled):
+        return "abgebrochen"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    return "fehler"
 
 
 def _actual_sent_params(result) -> dict:
@@ -548,7 +569,12 @@ start_clicked = col_start.button(
 )
 stop_clicked = col_stop.button("■ Stop", disabled=not run_active)
 
+if st.session_state.last_run_message:
+    level, text = st.session_state.last_run_message
+    getattr(st, level)(text)
+
 if start_clicked and not run_active:
+    st.session_state.last_run_message = None
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=chat_client_timeout_s, max_retries=0)
     tasks = [(m, p) for m in selected for p in prompts]
     st.session_state.results = []
@@ -593,11 +619,17 @@ if st.session_state.run is not None:
         except concurrent.futures.CancelledError:
             result, exc, call_start = None, StreamCancelled("Vor dem Start abgebrochen."), time.perf_counter()
         row = _build_result_row(run["run_id"], model_id, prompt, result, exc, call_start)
+        with run["progress_lock"]:
+            run["task_progress"][(model_id, prompt["id"])] = {
+                "elapsed": row["latency_s"] or 0.0, "first_token": True, "done": True,
+                "status": _classify_outcome(result, exc), "detail": row["response"],
+            }
         st.session_state.results.append(row)
         store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
         run["done_count"] += 1
 
     st.progress(run["done_count"] / run["total"], text=f"{run['done_count']}/{run['total']} abgeschlossen")
+    STATUS_LABELS = {"ok": "fertig", "fehler": "Fehler", "timeout": "Timeout", "abgebrochen": "abgebrochen"}
     lines = []
     with run["progress_lock"]:
         for model_id, prompt in run["futures"].values():
@@ -605,7 +637,9 @@ if st.session_state.run is not None:
             if info is None:
                 lines.append(f"- {model_id} · {prompt['id']}: wartet auf freien Slot ...")
             elif info["done"]:
-                lines.append(f"- {model_id} · {prompt['id']}: fertig ({info['elapsed']:.1f} s)")
+                label = STATUS_LABELS.get(info.get("status", "ok"), "fertig")
+                detail = f" - {info['detail']}" if info.get("status") not in (None, "ok") and info.get("detail") else ""
+                lines.append(f"- {model_id} · {prompt['id']}: {label} ({info['elapsed']:.1f} s){detail}")
             elif not info["first_token"]:
                 lines.append(f"- {model_id} · {prompt['id']}: in der NVIDIA-Warteschlange - wartet seit {info['elapsed']:.0f} s")
             else:
@@ -620,10 +654,13 @@ if st.session_state.run is not None:
                 f"{run['done_count']}/{run['total']} Calls fertig.",
                 flush=True,
             )
-            st.warning(f"Lauf abgebrochen – {run['done_count']} von {run['total']} Calls fertig.")
+            st.session_state.last_run_message = (
+                "warning", f"Lauf abgebrochen – {run['done_count']} von {run['total']} Calls fertig.",
+            )
         else:
-            st.success(f"Fertig - {run['done_count']}/{run['total']} Calls.")
+            st.session_state.last_run_message = ("success", f"Fertig - {run['done_count']}/{run['total']} Calls.")
         st.session_state.run = None
+        st.rerun()  # Start/Stop-Button-Zustand sofort neu zeichnen, nicht erst beim nächsten Klick
     else:
         time.sleep(0.4)
         st.rerun()
@@ -634,7 +671,18 @@ def _fmt(value, suffix: str = "", digits: int = 2) -> str:
     return f"{value:.{digits}f}{suffix}" if isinstance(value, float) else f"{value}{suffix}"
 
 
+def _fmt_tokens(value) -> str:
+    return "–" if value is None else str(value)
+
+
+def _fmt_cost(value) -> str:
+    return "–" if value is None else f"${value:.6f}"
+
+
 def _render_result_card(row: dict) -> str:
+    # Bewusst EIN zusammenhängender String ohne eingerücktes HTML über mehrere Zeilen: st.markdown
+    # interpretiert eine Zeile mit >= 4 Leerzeichen Einzug als Markdown-Codeblock und reißt dann
+    # auch die nächste(n) Karte(n) mit in den Codeblock (Live-Test-Bug, siehe PROTOKOLL.md).
     color = model_color(row["model_id"])
     sp = row.get("sent_params") or {}
     params_line = (
@@ -645,9 +693,9 @@ def _render_result_card(row: dict) -> str:
         params_line += f" (ohne '{sp['dropped_param']}', von NVIDIA Build abgelehnt)"
     metrics = (
         f"TTFT {_fmt(row.get('ttft_s'), ' s')} · Gen. {_fmt(row.get('generation_s'), ' s')} · "
-        f"Tokens {row.get('tokens_in', '–')}/{row.get('tokens_out', '–')}"
+        f"Tokens {_fmt_tokens(row.get('tokens_in'))}/{_fmt_tokens(row.get('tokens_out'))}"
         + (f" (davon {row['reasoning_tokens']} Reasoning)" if row.get("reasoning_tokens") else "")
-        + f" · {_fmt(row.get('tokens_per_s'), ' Tok/s', 1)} · ${row.get('cost_usd', 0.0):.6f}"
+        + f" · {_fmt(row.get('tokens_per_s'), ' Tok/s', 1)} · {_fmt_cost(row.get('cost_usd'))}"
     )
     status_html = "" if row["ok"] else "<div style='color:#E85D75;font-weight:600;margin-bottom:6px;'>Fehler</div>"
     reasoning_html = ""
@@ -657,20 +705,20 @@ def _render_result_card(row: dict) -> str:
             f"<div style='white-space:pre-wrap;margin-top:6px;font-size:13px;'>{html.escape(row['reasoning'])}</div>"
             "</details>"
         )
-    return f"""
-    <div style="min-width:320px;max-width:380px;flex:0 0 auto;background:#14171C;border:1px solid #252A31;
-                border-radius:12px;padding:16px;color:#E7E9EC;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="color:{color};font-size:18px;">●</span>
-        <strong>{html.escape(row['model_id'])}</strong>
-      </div>
-      {status_html}
-      <div style="font-size:13px;color:#9AA3AE;margin-bottom:8px;">{metrics}</div>
-      <div style="white-space:pre-wrap;font-size:14px;">{html.escape(row['response'] or '')}</div>
-      {reasoning_html}
-      <div style="font-size:12px;color:#7D8691;margin-top:10px;">{html.escape(params_line)}</div>
-    </div>
-    """
+    return (
+        "<div style=\"min-width:320px;max-width:380px;flex:0 0 auto;background:#14171C;"
+        "border:1px solid #252A31;border-radius:12px;padding:16px;color:#E7E9EC;\">"
+        "<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px;\">"
+        f"<span style=\"color:{color};font-size:18px;\">●</span>"
+        f"<strong>{html.escape(row['model_id'])}</strong>"
+        "</div>"
+        f"{status_html}"
+        f"<div style=\"font-size:13px;color:#9AA3AE;margin-bottom:8px;\">{metrics}</div>"
+        f"<div style=\"white-space:pre-wrap;font-size:14px;\">{html.escape(row['response'] or '')}</div>"
+        f"{reasoning_html}"
+        f"<div style=\"font-size:12px;color:#7D8691;margin-top:10px;\">{html.escape(params_line)}</div>"
+        "</div>"
+    )
 
 
 # ---------------- Ergebnisse ----------------
@@ -702,15 +750,40 @@ if st.session_state.results:
         )
 
     df = pd.DataFrame(st.session_state.results)
-    st.caption(f"Geschätzte Gesamtkosten dieses Laufs: ${df['cost_usd'].sum():.6f} (deine Preise aus der Modell-Liste oben)")
+    known_cost = df["cost_usd"].dropna()
+    unknown_cost_count = int(df["cost_usd"].isna().sum())
+    cost_note = (
+        f" (zzgl. {unknown_cost_count} Antwort/en mit unbekanntem Preis, nicht eingerechnet)"
+        if unknown_cost_count else ""
+    )
+    st.caption(
+        f"Geschätzte Gesamtkosten dieses Laufs: ${known_cost.sum():.6f} "
+        f"(deine Preise aus der Modell-Liste oben){cost_note}"
+    )
 
     with st.expander("Alle Ergebnisse als Tabelle"):
-        st.dataframe(
-            df[["model_id", "prompt_id", "technique", "ok",
-                "ttft_s", "generation_s", "latency_s", "tokens_in", "tokens_out",
-                "tokens_per_s", "reasoning_tokens", "cost_usd", "response"]],
-            use_container_width=True,
-        )
+        table_cols = ["model_id", "prompt_id", "technique", "ok",
+                      "ttft_s", "generation_s", "latency_s", "tokens_in", "tokens_out",
+                      "tokens_per_s", "reasoning_tokens", "cost_usd", "response"]
+        int_cols = {"tokens_in", "tokens_out", "reasoning_tokens"}
+        cost_cols = {"cost_usd"}
+        float_cols = {"ttft_s", "generation_s", "latency_s", "tokens_per_s"}
+
+        def _fmt_table_value(value, col):
+            if pd.isna(value):
+                return "–"
+            if col in int_cols:
+                return str(int(value))
+            if col in cost_cols:
+                return f"${value:.6f}"
+            if col in float_cols:
+                return f"{value:.2f}"
+            return value
+
+        display_df = df[table_cols].copy()
+        for col in int_cols | cost_cols | float_cols:
+            display_df[col] = display_df[col].apply(lambda v, c=col: _fmt_table_value(v, c))
+        st.dataframe(display_df, use_container_width=True)
 
     run_id = st.session_state.results[0]["run_id"]
     col_json, col_csv = st.columns(2)

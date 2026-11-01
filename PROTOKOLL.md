@@ -1,5 +1,16 @@
 # AiVersus – Protokoll
 
+## Nachtschicht 01./02.11. – Entscheidungen & offene Fragen
+
+Autonomer Nachtlauf laut Auftrag vom 01.11. (Nutzer bis 02.11. nicht erreichbar).
+Arbeitsregeln: pro Schritt Syntax-Check + Smoke-Test + eigener Commit; bei
+Unklarheiten konservative Lösung wählen und hier dokumentieren statt zu fragen;
+kein `uv --active`, keine Änderungen außerhalb AiVersus, kein Push bis zum Schluss,
+nur gemockte Clients (kein API-Key vorhanden).
+
+Dieser Abschnitt wird während der Nacht laufend ergänzt (neueste Einträge oben
+innerhalb des Abschnitts).
+
 ## 2026-10-18
 
 ### Was gemacht
