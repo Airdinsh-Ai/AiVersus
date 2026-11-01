@@ -18,6 +18,7 @@ gespeichert (kein .env-Fallback, kein Logging, nicht in runs.db, nicht in Export
 
 import json
 import time
+from collections import Counter
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -114,6 +115,19 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
         st.sidebar.error(describe_api_error(e))
     else:
         st.sidebar.success(f"Key gültig - {len(chat_models)} Chat-Modelle verfügbar.")
+
+        with st.sidebar.expander("Katalog-Diagnose"):
+            namespace_counts = Counter(m.split("/", 1)[0] for m in chat_models if "/" in m)
+            without_namespace = [m for m in chat_models if "/" not in m]
+            st.write(
+                "**Namespaces:** "
+                + ", ".join(f"{ns}: {count}" for ns, count in sorted(namespace_counts.items()))
+            )
+            if without_namespace:
+                st.write(f"**Ohne Namespace ({len(without_namespace)}):**", without_namespace)
+            st.write("**Alle Chat-Modell-IDs:**")
+            st.code("\n".join(sorted(chat_models)))
+
         test_model = pick_quick_test_model(chat_models)
         if not test_model:
             st.sidebar.warning("Kein passendes Modell im Katalog gefunden.")
