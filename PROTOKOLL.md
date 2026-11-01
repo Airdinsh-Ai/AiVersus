@@ -11,6 +11,12 @@ nur gemockte Clients (kein API-Key vorhanden).
 Dieser Abschnitt wird während der Nacht laufend ergänzt (neueste Einträge oben
 innerhalb des Abschnitts).
 
+- `pricing.json` (Schritt 3) bewusst NICHT gitignored, anders als `availability.json`:
+  availability.json ist flüchtige, account-/zeitabhängige Messung (gehört nicht ins
+  Repo), pricing.json dagegen kuratierte, quellenbelegte Referenzdaten, die mit dem
+  Projekt mitgeliefert werden sollen (ähnlich wie pricing.py bisher). Entscheidung,
+  da die Auftragsliste für pricing.json kein "(gitignored)" nannte, für
+  availability.json aber explizit.
 - Beim Testen von storage.py-Methoden ist versehentlich eine Testzeile
   (run_id "testrun") in die echte, lokale `runs.db` gelangt (die Datei existiert
   schon aus den Live-Tests des Nutzers, ist aber gitignored). Zeile sofort wieder

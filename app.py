@@ -20,6 +20,7 @@ import concurrent.futures
 import hashlib
 import html
 import json
+import os
 import threading
 import time
 from collections import Counter
@@ -57,6 +58,8 @@ store = RunStore()
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierungs-Warteschlange
 MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
+AVAILABILITY_PATH = "availability.json"
+AVAILABILITY_CHECK_TIMEOUT_S = 20.0  # kurzes Zeitfenster pro Modell - reicht für den Mini-Call
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
 MODEL_COLOR_PALETTE = [
     "#6CA8FF", "#F59E4C", "#4CC9B0", "#D97757", "#9B8AFB",
@@ -71,6 +74,26 @@ def model_color(model_id: str) -> str:
     """
     idx = int(hashlib.md5(model_id.encode()).hexdigest(), 16) % len(MODEL_COLOR_PALETTE)
     return MODEL_COLOR_PALETTE[idx]
+
+
+def load_availability() -> dict:
+    """{"checked_at": iso-Zeitstempel oder None, "models": {model_id: {"status", "detail"}}}."""
+    if not os.path.exists(AVAILABILITY_PATH):
+        return {"checked_at": None, "models": {}}
+    try:
+        with open(AVAILABILITY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"checked_at": data.get("checked_at"), "models": data.get("models", {})}
+    except (OSError, json.JSONDecodeError):
+        return {"checked_at": None, "models": {}}
+
+
+def save_availability(models: dict) -> dict:
+    data = {"checked_at": datetime.now(timezone.utc).isoformat(), "models": models}
+    with open(AVAILABILITY_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return data
+
 
 if "prompts" not in st.session_state:
     st.session_state.prompts = [
@@ -91,6 +114,10 @@ if "run" not in st.session_state:
     st.session_state.run = None
 if "last_run_message" not in st.session_state:
     st.session_state.last_run_message = None
+if "availability_data" not in st.session_state:
+    st.session_state.availability_data = load_availability()
+if "availability_run" not in st.session_state:
+    st.session_state.availability_run = None
 
 
 def _original_message(e: Exception) -> str:
@@ -150,6 +177,31 @@ def _is_definitively_unavailable(e: Exception) -> bool:
     if isinstance(e, NotFoundError):
         return True
     return isinstance(e, APIStatusError) and e.status_code == 410
+
+
+def _classify_availability(result) -> str:
+    """available / unavailable (404/410 - definitiv) / slow (Timeout oder sonstiger Fehler -
+
+    unbekannt, nicht bestätigt tot).
+    """
+    if result.ok:
+        return "available"
+    if _is_definitively_unavailable(result.error):
+        return "unavailable"
+    return "slow"
+
+
+def _check_one_model_task(client, model_id: str):
+    """Läuft in einem Worker-Thread - Mini-Call (max_tokens=1), kurzer Timeout."""
+    result = call_chat_streaming(
+        client, model_id, [{"role": "user", "content": "Hi"}],
+        first_token_timeout_s=AVAILABILITY_CHECK_TIMEOUT_S,
+        inter_token_timeout_s=AVAILABILITY_CHECK_TIMEOUT_S,
+        max_tokens=1,
+    )
+    status = _classify_availability(result)
+    detail = None if result.ok else describe_api_error(result.error)
+    return model_id, status, detail
 
 
 @st.cache_resource
@@ -278,6 +330,68 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
             else:
                 st.sidebar.error(describe_api_error(result.error))
 
+# ---------------- Sidebar: Verfügbarkeit ----------------
+st.sidebar.divider()
+st.sidebar.subheader("Verfügbarkeit")
+availability_run_active = st.session_state.availability_run is not None
+last_checked = st.session_state.availability_data.get("checked_at")
+if last_checked:
+    st.sidebar.caption(f"Letzte Prüfung: {last_checked}")
+else:
+    st.sidebar.caption("Noch nicht geprüft.")
+
+if st.sidebar.button(
+    "Verfügbarkeit prüfen", disabled=availability_run_active or not nvidia_key,
+    help="Mini-Call (max_tokens=1) an jedes Katalog-Modell, parallel, kurzer Timeout.",
+):
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=AVAILABILITY_CHECK_TIMEOUT_S + 10, max_retries=0)
+    try:
+        all_chat_models = fetch_chat_models(client)
+    except Exception as e:
+        st.sidebar.error(describe_api_error(e))
+        all_chat_models = []
+    if all_chat_models:
+        avail_executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CALLS)
+        avail_futures = {avail_executor.submit(_check_one_model_task, client, m): m for m in all_chat_models}
+        st.session_state.availability_run = {
+            "executor": avail_executor, "futures": avail_futures, "pending": set(avail_futures),
+            "total": len(all_chat_models), "done_count": 0, "results": {},
+        }
+        st.rerun()
+
+if st.session_state.availability_run is not None:
+    avail_run = st.session_state.availability_run
+    for future in [f for f in avail_run["pending"] if f.done()]:
+        avail_run["pending"].discard(future)
+        model_id = avail_run["futures"][future]
+        try:
+            _, status, detail = future.result()
+        except Exception as e:
+            status, detail = "slow", str(e)
+        avail_run["results"][model_id] = {"status": status, "detail": detail}
+        avail_run["done_count"] += 1
+
+    st.sidebar.progress(
+        avail_run["done_count"] / avail_run["total"], text=f"{avail_run['done_count']}/{avail_run['total']} geprüft",
+    )
+    if not avail_run["pending"]:
+        avail_run["executor"].shutdown(wait=False)
+        st.session_state.availability_data = save_availability(avail_run["results"])
+        n_avail = sum(1 for v in avail_run["results"].values() if v["status"] == "available")
+        n_unavail = sum(1 for v in avail_run["results"].values() if v["status"] == "unavailable")
+        n_slow = sum(1 for v in avail_run["results"].values() if v["status"] == "slow")
+        print(
+            f"[{datetime.now(timezone.utc).isoformat()}] VERFÜGBARKEITSPRÜFUNG fertig - "
+            f"verfügbar={n_avail} nicht_verfügbar={n_unavail} langsam/unbekannt={n_slow}",
+            flush=True,
+        )
+        st.session_state.availability_run = None
+        st.sidebar.success(f"{n_avail} verfügbar, {n_unavail} nicht verfügbar, {n_slow} langsam/unbekannt.")
+        st.rerun()
+    else:
+        time.sleep(0.5)
+        st.rerun()
+
 # ---------------- Sidebar: RAG ----------------
 st.sidebar.header("RAG (optional)")
 st.sidebar.caption("Folgt in Schritt 7 (Embeddings über NVIDIA Build) - aktuell deaktiviert.")
@@ -299,23 +413,26 @@ else:
         st.error(describe_api_error(e))
         chat_models = []
 
+availability_models = st.session_state.availability_data.get("models", {})
+hard_unavailable = {m for m, info in availability_models.items() if info.get("status") == "unavailable"}
+slow_models = {m for m, info in availability_models.items() if info.get("status") == "slow"}
+
 dropdown_options = build_dropdown_options(chat_models)
 available_choices = [
     m for m in dropdown_options
-    if m != SEPARATOR and m not in st.session_state.unavailable_models
+    if m != SEPARATOR and m not in st.session_state.unavailable_models and m not in hard_unavailable
 ]
 addable_choices = [m for m in available_choices if m not in st.session_state.selected_models]
 
-if st.session_state.unavailable_models:
-    st.caption(
-        "Für diesen Account nicht verfügbar (ausgeblendet): "
-        + ", ".join(sorted(st.session_state.unavailable_models))
-    )
+hidden = st.session_state.unavailable_models | hard_unavailable
+if hidden:
+    st.caption(f"Nicht verfügbar (ausgeblendet): {', '.join(sorted(hidden))}")
 
 col_pick, col_add = st.columns([5, 1])
 model_pick = col_pick.selectbox(
     "Modell hinzufügen", addable_choices, index=None, placeholder="Modell suchen ...",
     key="model_picker", label_visibility="collapsed",
+    format_func=lambda m: f"{m} (langsam/unbekannt)" if m in slow_models else m,
 )
 if col_add.button("Hinzufügen", disabled=not model_pick, use_container_width=True):
     st.session_state.selected_models.append(model_pick)

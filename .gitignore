@@ -3,3 +3,4 @@ rag_store/
 __pycache__/
 .venv/
 .env
+availability.json
