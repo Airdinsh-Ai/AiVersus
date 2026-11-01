@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# AiVersus – LLM-Vergleich (Evo V0.3)
+# AiVersus – LLM-Vergleich (Evo V0.4)
 # © 2026 Airdinsh (Erdinç Arslan) · MIT License · Masterschool AI Engineering Track
 # Signlab@gmx.de · https://Airdinsh.com
 #
@@ -9,9 +9,11 @@
 AiVersus: LLMs mit denselben Prompts vergleichen (Antwort, Tokens, Latenz, Kosten),
 optional mit eigenen Dokumenten als RAG-Kontext, jeder Lauf wird für die Timeline gespeichert.
 
-Start:   pip install -r requirements.txt
-         streamlit run app.py
-API-Keys werden in der Sidebar eingegeben und nirgends gespeichert.
+Anbieter: NVIDIA Build (OpenAI-kompatible API, https://build.nvidia.com).
+
+Start:   uv run streamlit run app.py
+API-Key wird in der Sidebar eingegeben, nur im Session-State gehalten und nirgends
+gespeichert (kein .env-Fallback, kein Logging, nicht in runs.db, nicht in Exporten).
 """
 
 import json
@@ -20,7 +22,14 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-from openai import OpenAI
+from openai import (
+    APIError,
+    APIStatusError,
+    AuthenticationError,
+    NotFoundError,
+    OpenAI,
+    RateLimitError,
+)
 
 from pricing import estimate_cost_usd
 from rag import RagIndex, build_prompt
@@ -29,22 +38,11 @@ from storage import RunStore
 st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
 store = RunStore()
 
-# Beide Provider sprechen über das openai-SDK; Google bietet dafür einen kompatiblen Endpunkt.
-PROVIDERS = {
-    "openai": {"label": "OpenAI", "base_url": None, "placeholder": "sk-..."},
-    "google": {
-        "label": "Google Gemini",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "placeholder": "AIza...",
-    },
-}
-# Die Modelle der Comparison Table. Schlüssel überall: "provider:modell"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+# Platzhalter-Katalog - Schritt 3 ersetzt das durch eine Live-Abfrage via models.list().
 MODELS = [
-    ("openai", "gpt-4o-mini"),
-    ("openai", "gpt-4.1-mini"),
-    ("openai", "gpt-5-mini"),
-    ("google", "gemini-2.5-flash"),
-    ("google", "gemini-2.5-pro"),
+    "meta/llama-3.1-8b-instruct",
+    "mistralai/mixtral-8x7b-instruct-v0.1",
 ]
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
 
@@ -57,41 +55,80 @@ if "results" not in st.session_state:
     st.session_state.results = []
 
 
+def describe_api_error(e: Exception) -> str:
+    """Lesbare deutsche Fehlermeldung statt Traceback in der UI."""
+    if isinstance(e, AuthenticationError):
+        return "API-Key ungültig oder abgelehnt (401)."
+    if isinstance(e, RateLimitError):
+        return "Rate-Limit bei NVIDIA Build erreicht (429) - kurz warten und erneut versuchen."
+    if isinstance(e, NotFoundError):
+        return "Modell nicht gefunden (404) - Modell-ID in NVIDIA Build prüfen."
+    if isinstance(e, APIStatusError):
+        return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code})."
+    if isinstance(e, APIError):
+        return "Verbindung zu NVIDIA Build fehlgeschlagen."
+    return "Unbekannter Fehler beim API-Aufruf."
+
+
 @st.cache_resource
-def get_index(openai_key: str) -> RagIndex:
-    return RagIndex(api_key=openai_key)
+def get_index(api_key: str) -> RagIndex:
+    return RagIndex(api_key=api_key)
 
 
-# ---------------- Sidebar ----------------
-st.sidebar.header("API-Keys")
-keys = {
-    p: st.sidebar.text_input(cfg["label"], type="password", placeholder=cfg["placeholder"], key=f"key_{p}")
-    for p, cfg in PROVIDERS.items()
-}
+# ---------------- Sidebar: API-Key ----------------
+st.sidebar.header("NVIDIA Build API-Key")
+nvidia_key = st.sidebar.text_input(
+    "API-Key",
+    type="password",
+    placeholder="nvapi-...",
+    key="nvidia_api_key",
+    help="Nur für diese Sitzung im Speicher - wird nicht geloggt, nicht gespeichert, nicht exportiert.",
+)
 
+# ---------------- Sidebar: Verbindungstest ----------------
+st.sidebar.divider()
+st.sidebar.subheader("Verbindungstest")
+st.sidebar.caption("Ein kurzer Testaufruf mit einem kleinen, schnellen Modell.")
+if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
+    test_model = "meta/llama-3.1-8b-instruct"
+    sent_params = {"model": test_model, "temperature": 0.2, "max_tokens": 20}
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key)
+    start = time.perf_counter()
+    try:
+        resp = client.chat.completions.create(
+            model=sent_params["model"],
+            messages=[{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
+            temperature=sent_params["temperature"],
+            max_tokens=sent_params["max_tokens"],
+        )
+        latency = round(time.perf_counter() - start, 3)
+        choice = resp.choices[0]
+        usage = resp.usage
+        st.sidebar.success(f"Antwort erhalten ({latency} s).")
+        st.sidebar.write("**Antwort:**", choice.message.content)
+        st.sidebar.write("**Gesendete Parameter:**", sent_params)
+        st.sidebar.write(
+            "**usage (roh von NVIDIA Build):**",
+            {
+                "prompt_tokens": usage.prompt_tokens if usage else None,
+                "completion_tokens": usage.completion_tokens if usage else None,
+                "total_tokens": usage.total_tokens if usage else None,
+            },
+        )
+        st.sidebar.write("**finish_reason:**", choice.finish_reason)
+    except Exception as e:
+        st.sidebar.error(describe_api_error(e))
+
+# ---------------- Sidebar: Modelle ----------------
 st.sidebar.header("Modelle")
-selected = [
-    f"{p}:{m}" for p, m in MODELS
-    if st.sidebar.checkbox(f"{m}  ({PROVIDERS[p]['label']})", value=True, key=f"cb_{p}:{m}")
-]
+selected = [m for m in MODELS if st.sidebar.checkbox(m, value=True, key=f"cb_{m}")]
 
+# ---------------- Sidebar: RAG ----------------
 st.sidebar.header("RAG (optional)")
-index = get_index(keys["openai"]) if keys["openai"] else None
-use_rag = st.sidebar.checkbox("RAG-Kontext verwenden", value=False)
-top_k = st.sidebar.slider("Top-K Chunks", 1, 10, 4, disabled=not use_rag)
-uploads = st.sidebar.file_uploader("Dokumente (PDF, TXT, MD)", type=["pdf", "txt", "md"], accept_multiple_files=True)
-
-if st.sidebar.button("Index aufbauen", disabled=not (index and uploads)):
-    with st.sidebar, st.spinner("Chunking + Embedding ..."):
-        for f in uploads:
-            index.add_document(f.name, f.getvalue())
-if st.sidebar.button("Index leeren", disabled=not index):
-    index.clear()
-if index:
-    for name, n in index.sources().items():
-        st.sidebar.caption(f"· {name} ({n} Chunks)")
-elif use_rag:
-    st.sidebar.caption("RAG braucht den OpenAI-Key (Embeddings).")
+st.sidebar.caption("Folgt in Schritt 7 (Embeddings über NVIDIA Build) - aktuell deaktiviert.")
+use_rag = False
+rag_ready = False
+index = None
 
 # ---------------- Prompt-Suite ----------------
 st.title("AiVersus")
@@ -125,19 +162,14 @@ st.divider()
 prompts = [p for p in st.session_state.prompts if p["text"].strip()]
 st.write(f"**{len(selected)}** Modelle × **{len(prompts)}** Prompts = **{len(selected) * len(prompts)}** API-Calls")
 
-missing = sorted({PROVIDERS[m.split(":")[0]]["label"] for m in selected if not keys[m.split(":")[0]]})
-if missing:
-    st.warning("API-Key fehlt für: " + ", ".join(missing))
-rag_ready = bool(use_rag and index and index.document_count() > 0)
+if not nvidia_key:
+    st.warning("NVIDIA Build API-Key fehlt (Sidebar).")
 if use_rag and not rag_ready:
     st.warning("RAG ist aktiv, aber es ist noch kein Dokument indexiert — der Lauf geht ohne Kontext.")
 
 # ---------------- Ausführung ----------------
-if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and prompts) or bool(missing)):
-    clients = {
-        p: OpenAI(base_url=PROVIDERS[p]["base_url"], api_key=keys[p])
-        for p in {m.split(":")[0] for m in selected}
-    }
+if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and prompts and nvidia_key)):
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tasks = [(m, p) for m in selected for p in prompts]
     results = []
@@ -145,8 +177,7 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
 
     for n, (model_id, prompt) in enumerate(tasks):
         progress.progress(n / len(tasks), text=f"{model_id} · {prompt['id']}")
-        provider, _, model = model_id.partition(":")
-        retrieved = index.retrieve(prompt["text"], top_k) if rag_ready else []
+        retrieved = index.retrieve(prompt["text"], 4) if rag_ready else []
         row = {
             "run_id": run_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -158,8 +189,8 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
         }
         start = time.perf_counter()
         try:
-            resp = clients[provider].chat.completions.create(
-                model=model,
+            resp = client.chat.completions.create(
+                model=model_id,
                 messages=[{"role": "user", "content": build_prompt(prompt["text"], retrieved)}],
             )
             row.update(
@@ -169,7 +200,7 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
                 tokens_out=resp.usage.completion_tokens if resp.usage else None,
             )
         except Exception as e:  # Fehler (Key, Limit, Modellname) landen als Zeile im Ergebnis
-            row.update(ok=False, response=str(e), tokens_in=None, tokens_out=None)
+            row.update(ok=False, response=describe_api_error(e), tokens_in=None, tokens_out=None)
         row["latency_s"] = round(time.perf_counter() - start, 3)
         row["cost_usd"] = estimate_cost_usd(model_id, row["tokens_in"], row["tokens_out"])
         results.append(row)
