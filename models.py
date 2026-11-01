@@ -74,6 +74,16 @@ def fetch_chat_models(client: OpenAI) -> list:
     return sorted(m.id for m in response.data if _is_chat_model(m.id))
 
 
+def fetch_embedding_models(client: OpenAI) -> list:
+    """Embedding-Modelle aus dem Katalog - Gegenstück zu fetch_chat_models(), das sie ausschließt.
+
+    Bewusst live aus dem Katalog statt einer festen ID (z.B. OpenAIs "text-embedding-3-small"
+    existiert auf NVIDIA Build nicht) - für RAG (Schritt 5).
+    """
+    response = client.models.list()
+    return sorted(m.id for m in response.data if "embed" in m.id.lower())
+
+
 def _shutdown_timestamp(model) -> float | None:
     shutdown = getattr(model, "shutdown_date", None)
     if not shutdown:

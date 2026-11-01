@@ -6,8 +6,10 @@
 #
 
 """
-RAG: Dokument -> Chunks -> Embeddings (OpenAI) -> ChromaDB (lokal, Ordner rag_store/) -> Retrieval.
-Nutzt denselben OpenAI-Key wie die Modell-Aufrufe.
+RAG: Dokument -> Chunks -> Embeddings (NVIDIA Build) -> ChromaDB (lokal, Ordner rag_store/) -> Retrieval.
+Nutzt denselben NVIDIA-Build-Key wie die Modell-Aufrufe. Das Embedding-Modell wird live aus dem
+Katalog gewählt (siehe models.fetch_embedding_models), nicht fest verdrahtet - NVIDIA Build
+entfernt/ersetzt Modelle, siehe models.py.
 """
 
 import hashlib
@@ -17,7 +19,6 @@ from pathlib import Path
 
 from openai import OpenAI
 
-EMBED_MODEL = "text-embedding-3-small"
 CHUNK_SIZE = 1000     # Zeichen pro Chunk
 CHUNK_OVERLAP = 150   # Überlappung zwischen Chunks
 
@@ -54,14 +55,15 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
 
 
 class RagIndex:
-    def __init__(self, api_key: str, persist_dir: str = "rag_store"):
+    def __init__(self, api_key: str, base_url: str, embed_model: str, persist_dir: str = "rag_store"):
         import chromadb  # lazy - schwere Abhängigkeit, nur laden, wenn RAG tatsächlich genutzt wird
 
-        self._client = OpenAI(api_key=api_key)
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        self._embed_model = embed_model
         self._collection = chromadb.PersistentClient(path=persist_dir).get_or_create_collection("documents")
 
     def _embed(self, texts: list) -> list:
-        resp = self._client.embeddings.create(model=EMBED_MODEL, input=texts)
+        resp = self._client.embeddings.create(model=self._embed_model, input=texts)
         return [item.embedding for item in resp.data]
 
     def add_document(self, filename: str, data: bytes) -> int:

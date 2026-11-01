@@ -46,6 +46,7 @@ from models import (
     build_dropdown_options,
     fetch_chat_models,
     fetch_chat_models_by_recency,
+    fetch_embedding_models,
     pick_quick_test_candidates,
 )
 from pricing import PRICING_USD_PER_1M_TOKENS
@@ -228,14 +229,20 @@ def _check_one_model_task(client, model_id: str):
 
 
 @st.cache_resource
-def get_index(api_key: str) -> RagIndex:
-    return RagIndex(api_key=api_key)
+def get_index(api_key: str, embed_model: str) -> RagIndex:
+    return RagIndex(api_key=api_key, base_url=NVIDIA_BASE_URL, embed_model=embed_model)
 
 
 @st.cache_data(ttl=3600, show_spinner="Modellkatalog wird geladen ...")
 def _load_chat_models(api_key: str) -> list:
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=CATALOG_TIMEOUT_S, max_retries=0)
     return fetch_chat_models(client)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_embedding_models(api_key: str) -> list:
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=CATALOG_TIMEOUT_S, max_retries=0)
+    return fetch_embedding_models(client)
 
 
 # ---------------- Sidebar: API-Key ----------------
@@ -465,10 +472,47 @@ if st.sidebar.button("LLM Pricing"):
 
 # ---------------- Sidebar: RAG ----------------
 st.sidebar.header("RAG (optional)")
-st.sidebar.caption("Folgt in Schritt 7 (Embeddings über NVIDIA Build) - aktuell deaktiviert.")
-use_rag = False
-rag_ready = False
+use_rag = st.sidebar.checkbox("RAG-Kontext verwenden", value=False)
 index = None
+rag_ready = False
+top_k = 4
+
+if not use_rag:
+    st.sidebar.caption("Deaktiviert - Prompts gehen ohne eigene Dokumente an die Modelle.")
+elif not nvidia_key:
+    st.sidebar.caption("RAG braucht den NVIDIA Build API-Key (Embeddings).")
+else:
+    try:
+        embedding_models = _load_embedding_models(nvidia_key)
+    except Exception as e:
+        st.sidebar.error(describe_api_error(e))
+        embedding_models = []
+    if not embedding_models:
+        st.sidebar.warning("Kein Embedding-Modell im Katalog gefunden.")
+    else:
+        embed_model = st.sidebar.selectbox("Embedding-Modell", embedding_models, key="embed_model_pick")
+        index = get_index(nvidia_key, embed_model)
+        top_k = st.sidebar.slider("Top-K Chunks", 1, 10, 4)
+        uploads = st.sidebar.file_uploader(
+            "Dokumente (PDF, TXT, MD)", type=["pdf", "txt", "md"], accept_multiple_files=True,
+        )
+        col_build, col_clear = st.sidebar.columns(2)
+        if col_build.button("Index aufbauen", disabled=not uploads, use_container_width=True):
+            with st.sidebar, st.spinner("Chunking + Embedding ..."):
+                for f in uploads:
+                    try:
+                        index.add_document(f.name, f.getvalue())
+                    except Exception as e:
+                        st.sidebar.error(f"{f.name}: {describe_api_error(e)}")
+        if col_clear.button("Index leeren", use_container_width=True):
+            index.clear()
+
+        for name, n in index.sources().items():
+            st.sidebar.caption(f"· {name} ({n} Chunks)")
+
+        rag_ready = index.document_count() > 0
+        if not rag_ready:
+            st.sidebar.caption("Noch kein Dokument indexiert - der Lauf geht ohne Kontext.")
 
 # ---------------- Modelle ----------------
 st.title("AiVersus")
@@ -621,10 +665,12 @@ sent_params_record = {
 }
 
 
-def _run_one_task(client, model_id, prompt, task_progress, progress_lock, cancel_event):
+def _run_one_task(client, model_id, prompt, task_progress, progress_lock, cancel_event, retrieved_chunks):
     """Läuft in einem Worker-Thread - rührt nie st.session_state oder st.* an, nur den
 
-    geteilten task_progress-Dict (für die Live-Anzeige im Hauptthread).
+    geteilten task_progress-Dict (für die Live-Anzeige im Hauptthread). `retrieved_chunks` wird
+    einmal pro Prompt im Hauptthread vorab geholt (sonst würde jedes Modell dieselbe Anfrage
+    redundant selbst embedden).
     """
     key = (model_id, prompt["id"])
     call_start = time.perf_counter()
@@ -638,7 +684,7 @@ def _run_one_task(client, model_id, prompt, task_progress, progress_lock, cancel
         messages = []
         if sent_params_record["system_prompt"]:
             messages.append({"role": "system", "content": sent_params_record["system_prompt"]})
-        messages.append({"role": "user", "content": build_prompt(prompt["text"], [])})
+        messages.append({"role": "user", "content": build_prompt(prompt["text"], retrieved_chunks)})
         result = call_chat_streaming(
             client, model_id, messages,
             on_progress=_on_progress,
@@ -655,7 +701,7 @@ def _run_one_task(client, model_id, prompt, task_progress, progress_lock, cancel
             "elapsed": result.duration_s if result else round(time.perf_counter() - call_start, 3),
             "first_token": True, "done": True,
         }
-    return result, exc, call_start
+    return result, exc, call_start, retrieved_chunks
 
 
 def _cost_usd(model_id: str, tokens_in, tokens_out):
@@ -699,15 +745,17 @@ def _actual_sent_params(result) -> dict:
     }
 
 
-def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, call_start: float) -> dict:
+def _build_result_row(
+    run_id: str, model_id: str, prompt: dict, result, exc, call_start: float, retrieved_chunks=(),
+) -> dict:
     row = {
         "run_id": run_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_id": model_id,
         "prompt_id": prompt["id"],
         "technique": prompt["technique"],
-        "injected_context": False,
-        "retrieved_sources": [],
+        "injected_context": bool(retrieved_chunks),
+        "retrieved_sources": [f"{c.source}#{c.chunk_index}" for c in retrieved_chunks],
         "sent_params": _actual_sent_params(result),
         "stars": None,
         "is_best": False,
@@ -777,10 +825,25 @@ if start_clicked and not run_active:
     cancel_event = threading.Event()
     task_progress: dict = {}
     progress_lock = threading.Lock()
+
+    # Einmal pro Prompt abrufen, nicht pro Modell - sonst würde jedes Modell dieselbe Anfrage
+    # redundant selbst embedden (gleicher Prompt, unabhängig vom Modell dieselben Chunks).
+    retrieval_by_prompt = {}
+    if rag_ready:
+        with st.spinner("RAG-Kontext wird abgerufen ..."):
+            for p in prompts:
+                try:
+                    retrieval_by_prompt[p["id"]] = index.retrieve(p["text"], top_k)
+                except Exception as e:
+                    log_error_detail(f"RAG-Retrieval {p['id']}", e)
+                    retrieval_by_prompt[p["id"]] = []
+
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_CALLS, len(tasks)))
     futures = {
-        executor.submit(_run_one_task, client, model_id, prompt, task_progress, progress_lock, cancel_event):
-            (model_id, prompt)
+        executor.submit(
+            _run_one_task, client, model_id, prompt, task_progress, progress_lock, cancel_event,
+            retrieval_by_prompt.get(prompt["id"], []),
+        ): (model_id, prompt)
         for model_id, prompt in tasks
     }
     st.session_state.run = {
@@ -811,10 +874,11 @@ if st.session_state.run is not None:
         run["pending"].discard(future)
         model_id, prompt = run["futures"][future]
         try:
-            result, exc, call_start = future.result()
+            result, exc, call_start, retrieved_chunks = future.result()
         except concurrent.futures.CancelledError:
             result, exc, call_start = None, StreamCancelled("Vor dem Start abgebrochen."), time.perf_counter()
-        row = _build_result_row(run["run_id"], model_id, prompt, result, exc, call_start)
+            retrieved_chunks = []
+        row = _build_result_row(run["run_id"], model_id, prompt, result, exc, call_start, retrieved_chunks)
         with run["progress_lock"]:
             run["task_progress"][(model_id, prompt["id"])] = {
                 "elapsed": row["latency_s"] or 0.0, "first_token": True, "done": True,
@@ -905,6 +969,14 @@ def _render_result_card(row: dict) -> str:
             f"<div style='white-space:pre-wrap;margin-top:6px;font-size:13px;'>{html.escape(row['reasoning'])}</div>"
             "</details>"
         )
+    rag_html = ""
+    if row.get("injected_context"):
+        sources_list = "".join(f"<li>{html.escape(s)}</li>" for s in row.get("retrieved_sources", []))
+        rag_html = (
+            "<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>"
+            f"RAG-Kontext ({len(row.get('retrieved_sources', []))} Chunks)</summary>"
+            f"<ul style='margin:6px 0 0; padding-left:18px; font-size:12px;'>{sources_list}</ul></details>"
+        )
     return (
         "<div style=\"min-width:320px;max-width:380px;flex:0 0 auto;background:#14171C;"
         "border:1px solid #252A31;border-radius:12px;padding:16px;color:#E7E9EC;\">"
@@ -916,6 +988,7 @@ def _render_result_card(row: dict) -> str:
         f"<div style=\"font-size:13px;color:#9AA3AE;margin-bottom:8px;\">{metrics}</div>"
         f"<div style=\"white-space:pre-wrap;font-size:14px;\">{html.escape(row['response'] or '')}</div>"
         f"{reasoning_html}"
+        f"{rag_html}"
         f"<div style=\"font-size:12px;color:#7D8691;margin-top:10px;\">{html.escape(params_line)}</div>"
         "</div>"
     )

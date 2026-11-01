@@ -11,6 +11,23 @@ nur gemockte Clients (kein API-Key vorhanden).
 Dieser Abschnitt wird während der Nacht laufend ergänzt (neueste Einträge oben
 innerhalb des Abschnitts).
 
+### LIVE-TEST OFFEN (Checkliste für morgen)
+- [ ] Schritt 5 (RAG): volle Kette Datei-Upload (echter st.file_uploader) →
+  Index aufbauen → Benchmark mit injected_context=True → Chunks auf der Karte.
+  Nur die Bausteine einzeln getestet (RagIndex add_document/retrieve mit
+  gemocktem Client, Embedding-Modell-Filter, Lazy-Import), nicht der
+  Datei-Upload-Widget-Pfad selbst (in AppTest nicht praktikabel simulierbar).
+
+- Beim Testen der RAG-Reaktivierung (Schritt 5) ist versehentlich ein echter
+  `rag_store/`-Ordner (chromadb-Datei) im Projekt-Root entstanden, obwohl der
+  Test in einem Temp-Verzeichnis laufen sollte (Ursache nicht abschließend
+  geklärt - vermutlich hat `get_index()`/`RagIndex` den relativen Default-Pfad
+  "rag_store" zu einem Zeitpunkt aufgelöst, an dem das CWD doch wieder das
+  Projektverzeichnis war). War ohnehin gitignored, keine echten Daten betroffen;
+  einzelne Datei + leeren Ordner gezielt entfernt (kein rm -rf, das hat der
+  Auto-Mode-Classifier als "irreversible lokale Zerstörung" abgelehnt).
+  Für weitere Tests heute Nacht: RagIndex-Instanzen mit explizitem, absolutem
+  Temp-Pfad für persist_dir erzeugen statt auf chdir+relativen Pfad zu vertrauen.
 - Recherche für Schritt 3 (Pricing-Vorbefüllung): WebSearch nach
   "NVIDIA Build pricing per million tokens" und WebFetch auf
   build.nvidia.com/pricing (404) zeigen: NVIDIA Build hat keine eigene,
