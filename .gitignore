@@ -1,0 +1,5 @@
+runs.db
+rag_store/
+__pycache__/
+.venv/
+.env
