@@ -17,6 +17,7 @@ gespeichert (kein .env-Fallback, kein Logging, nicht in runs.db, nicht in Export
 """
 
 import concurrent.futures
+import hashlib
 import json
 import threading
 import time
@@ -38,7 +39,7 @@ from openai import (
 
 from chat_client import call_chat_streaming
 from models import SEPARATOR, build_dropdown_options, fetch_chat_models, pick_quick_test_candidates
-from pricing import estimate_cost_usd
+from pricing import PRICING_USD_PER_1M_TOKENS
 from rag import RagIndex, build_prompt
 from storage import RunStore
 
@@ -49,6 +50,19 @@ NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierungs-Warteschlange
 MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
+MODEL_COLOR_PALETTE = [
+    "#6CA8FF", "#F59E4C", "#4CC9B0", "#D97757", "#9B8AFB",
+    "#E85D75", "#7FD858", "#F2B34A", "#5AC8FA", "#C77DFF",
+]
+
+
+def model_color(model_id: str) -> str:
+    """Feste Farbe pro Modell - deterministisch über den Namen, nicht über die Listenposition
+
+    (sonst würde das Entfernen eines Modells die Farben der übrigen verschieben).
+    """
+    idx = int(hashlib.md5(model_id.encode()).hexdigest(), 16) % len(MODEL_COLOR_PALETTE)
+    return MODEL_COLOR_PALETTE[idx]
 
 if "prompts" not in st.session_state:
     st.session_state.prompts = [
@@ -59,6 +73,10 @@ if "results" not in st.session_state:
     st.session_state.results = []
 if "unavailable_models" not in st.session_state:
     st.session_state.unavailable_models = set()
+if "selected_models" not in st.session_state:
+    st.session_state.selected_models = []
+if "model_prices" not in st.session_state:
+    st.session_state.model_prices = {}
 
 
 def _original_message(e: Exception) -> str:
@@ -241,30 +259,6 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
             else:
                 st.sidebar.error(describe_api_error(result.error))
 
-# ---------------- Sidebar: Modelle ----------------
-st.sidebar.header("Modelle")
-if not nvidia_key:
-    st.sidebar.caption("Trage deinen API-Key ein, um den Modellkatalog zu laden.")
-    selected = []
-else:
-    try:
-        chat_models = _load_chat_models(nvidia_key)
-    except Exception as e:
-        st.sidebar.error(describe_api_error(e))
-        chat_models = []
-    dropdown_options = build_dropdown_options(chat_models)
-    choices = [
-        m for m in dropdown_options
-        if m != SEPARATOR and m not in st.session_state.unavailable_models
-    ]
-    st.sidebar.caption(f"{len(choices)} Chat-Modelle geladen - Top 10 zuerst, dann der Rest alphabetisch.")
-    if st.session_state.unavailable_models:
-        st.sidebar.caption(
-            "Für diesen Account nicht verfügbar (ausgeblendet): "
-            + ", ".join(sorted(st.session_state.unavailable_models))
-        )
-    selected = st.sidebar.multiselect("Modelle", choices, default=[])
-
 # ---------------- Sidebar: RAG ----------------
 st.sidebar.header("RAG (optional)")
 st.sidebar.caption("Folgt in Schritt 7 (Embeddings über NVIDIA Build) - aktuell deaktiviert.")
@@ -272,8 +266,83 @@ use_rag = False
 rag_ready = False
 index = None
 
-# ---------------- Prompt-Suite ----------------
+# ---------------- Modelle ----------------
 st.title("AiVersus")
+st.subheader("Modelle")
+
+if not nvidia_key:
+    st.caption("Trage deinen API-Key ein (Sidebar), um den Modellkatalog zu laden.")
+    chat_models = []
+else:
+    try:
+        chat_models = _load_chat_models(nvidia_key)
+    except Exception as e:
+        st.error(describe_api_error(e))
+        chat_models = []
+
+dropdown_options = build_dropdown_options(chat_models)
+available_choices = [
+    m for m in dropdown_options
+    if m != SEPARATOR and m not in st.session_state.unavailable_models
+]
+addable_choices = [m for m in available_choices if m not in st.session_state.selected_models]
+
+if st.session_state.unavailable_models:
+    st.caption(
+        "Für diesen Account nicht verfügbar (ausgeblendet): "
+        + ", ".join(sorted(st.session_state.unavailable_models))
+    )
+
+col_pick, col_add = st.columns([5, 1])
+model_pick = col_pick.selectbox(
+    "Modell hinzufügen", addable_choices, index=None, placeholder="Modell suchen ...",
+    key="model_picker", label_visibility="collapsed",
+)
+if col_add.button("Hinzufügen", disabled=not model_pick, use_container_width=True):
+    st.session_state.selected_models.append(model_pick)
+    known_price = PRICING_USD_PER_1M_TOKENS.get(model_pick, (0.0, 0.0))
+    st.session_state.model_prices[model_pick] = {"input": known_price[0], "output": known_price[1]}
+    st.rerun()
+
+if st.session_state.selected_models:
+    if len(st.session_state.selected_models) >= 5:
+        st.caption(
+            "Ab 5 Modellen kann NVIDIA Build (Freikontingent) insgesamt länger dauern "
+            "(parallel, aber begrenzt) - kein hartes Limit, nur ein Hinweis."
+        )
+    header_dot, header_name, header_in, header_out, header_del = st.columns([0.4, 3, 1.3, 1.3, 0.5])
+    header_name.caption("Modell")
+    header_in.caption("Input $/1M")
+    header_out.caption("Output $/1M")
+
+    to_remove = None
+    for model_id in st.session_state.selected_models:
+        col_dot, col_name, col_in, col_out, col_del = st.columns([0.4, 3, 1.3, 1.3, 0.5])
+        col_dot.markdown(
+            f"<span style='color:{model_color(model_id)}; font-size:22px;'>●</span>", unsafe_allow_html=True,
+        )
+        col_name.write(model_id)
+        price = st.session_state.model_prices.setdefault(model_id, {"input": 0.0, "output": 0.0})
+        price["input"] = col_in.number_input(
+            "Input $/1M", value=price["input"], step=0.01, format="%.4f",
+            key=f"price_in_{model_id}", label_visibility="collapsed",
+        )
+        price["output"] = col_out.number_input(
+            "Output $/1M", value=price["output"], step=0.01, format="%.4f",
+            key=f"price_out_{model_id}", label_visibility="collapsed",
+        )
+        if col_del.button("✕", key=f"del_model_{model_id}"):
+            to_remove = model_id
+    if to_remove is not None:
+        st.session_state.selected_models.remove(to_remove)
+        st.session_state.model_prices.pop(to_remove, None)
+        st.rerun()
+else:
+    st.caption("Noch keine Modelle hinzugefügt.")
+
+selected = st.session_state.selected_models
+
+# ---------------- Prompt-Suite ----------------
 st.subheader("Prompt-Suite")
 
 to_delete = None
@@ -341,6 +410,14 @@ def _run_one_task(client, model_id, prompt, task_progress, progress_lock):
     return model_id, prompt, result, exc, call_start
 
 
+def _cost_usd(model_id: str, tokens_in, tokens_out) -> float:
+    """Kosten nach den in der Modell-Liste eingetragenen Preisen - gilt nur für diesen Lauf."""
+    if tokens_in is None or tokens_out is None:
+        return 0.0
+    price = st.session_state.model_prices.get(model_id, {"input": 0.0, "output": 0.0})
+    return round((tokens_in * price["input"] + tokens_out * price["output"]) / 1_000_000, 6)
+
+
 def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, call_start: float) -> dict:
     row = {
         "run_id": run_id,
@@ -385,7 +462,7 @@ def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, cal
         round(row["tokens_out"] / row["generation_s"], 1)
         if row.get("tokens_out") and row.get("generation_s") else None
     )
-    row["cost_usd"] = estimate_cost_usd(model_id, row["tokens_in"], row["tokens_out"])
+    row["cost_usd"] = _cost_usd(model_id, row["tokens_in"], row["tokens_out"])
     return row
 
 
@@ -447,7 +524,7 @@ if st.session_state.results:
             "tokens_per_s", "reasoning_tokens", "cost_usd", "response"]],
         use_container_width=True,
     )
-    st.caption(f"Geschätzte Gesamtkosten dieses Laufs: ${df['cost_usd'].sum():.6f} (Preise: pricing.py, Richtwerte)")
+    st.caption(f"Geschätzte Gesamtkosten dieses Laufs: ${df['cost_usd'].sum():.6f} (deine Preise aus der Modell-Liste oben)")
 
     reasoning_rows = [r for r in st.session_state.results if r.get("reasoning")]
     if reasoning_rows:
