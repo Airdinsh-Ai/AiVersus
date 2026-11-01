@@ -378,6 +378,36 @@ if not nvidia_key:
 if use_rag and not rag_ready:
     st.warning("RAG ist aktiv, aber es ist noch kein Dokument indexiert — der Lauf geht ohne Kontext.")
 
+# ---------------- Parameter (für alle Modelle gleich) ----------------
+st.subheader("Parameter")
+col_temp, col_top_p, col_max_tokens = st.columns(3)
+temperature = col_temp.number_input("temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.1)
+top_p = col_top_p.number_input("top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
+max_tokens = col_max_tokens.number_input("max_tokens", min_value=1, max_value=8192, value=1024, step=1)
+
+system_prompt = st.text_area(
+    "System-Prompt (optional)", value="", placeholder="z.B. Antworte knapp und auf Deutsch.",
+)
+
+col_seed_on, col_seed_val = st.columns([1, 2])
+use_seed = col_seed_on.checkbox("Seed fixieren", value=False)
+seed = col_seed_val.number_input(
+    "seed", min_value=0, max_value=2_147_483_647, value=42, step=1, disabled=not use_seed,
+)
+seed_to_send = seed if use_seed else None
+
+# API-Parameter (an NVIDIA Build gesendet) getrennt von der Anzeige/Speicherung (nie null bei
+# temperature/top_p/max_tokens - die haben immer einen konkreten Wert, nur seed/System-Prompt
+# können echt "nicht gesetzt" sein, und das wird auch so angezeigt statt als leeres Feld).
+api_params = {"temperature": temperature, "top_p": top_p, "max_tokens": max_tokens}
+if seed_to_send is not None:
+    api_params["seed"] = seed_to_send
+sent_params_record = {
+    "temperature": temperature, "top_p": top_p, "max_tokens": max_tokens,
+    "seed": seed_to_send, "system_prompt": system_prompt.strip() or None,
+}
+
+
 def _run_one_task(client, model_id, prompt, task_progress, progress_lock):
     """Läuft in einem Worker-Thread - rührt nie st.session_state oder st.* an, nur den
 
@@ -392,12 +422,16 @@ def _run_one_task(client, model_id, prompt, task_progress, progress_lock):
 
     print(f"[{datetime.now(timezone.utc).isoformat()}] START {model_id} prompt={prompt['id']}", flush=True)
     try:
+        messages = []
+        if sent_params_record["system_prompt"]:
+            messages.append({"role": "system", "content": sent_params_record["system_prompt"]})
+        messages.append({"role": "user", "content": build_prompt(prompt["text"], [])})
         result = call_chat_streaming(
-            client, model_id,
-            [{"role": "user", "content": build_prompt(prompt["text"], [])}],
+            client, model_id, messages,
             on_progress=_on_progress,
             first_token_timeout_s=first_token_timeout_s,
             inter_token_timeout_s=inter_token_timeout_s,
+            **api_params,
         )
         exc = None
     except Exception as e:  # unerwarteter Fehler außerhalb des API-Aufrufs selbst
@@ -427,6 +461,7 @@ def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, cal
         "technique": prompt["technique"],
         "injected_context": False,
         "retrieved_sources": [],
+        "sent_params": dict(sent_params_record),
     }
     if exc is not None:
         duration = round(time.perf_counter() - call_start, 3)
@@ -517,6 +552,14 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
 # ---------------- Ergebnisse ----------------
 if st.session_state.results:
     st.subheader("Ergebnisse")
+    last_params = st.session_state.results[-1]["sent_params"]
+    st.caption(
+        "Gesendete Parameter: temperature={temperature}, top_p={top_p}, max_tokens={max_tokens}, "
+        "seed={seed}, System-Prompt={system_prompt}".format(
+            **{**last_params, "seed": last_params["seed"] if last_params["seed"] is not None else "nicht gesetzt",
+               "system_prompt": "gesetzt" if last_params["system_prompt"] else "nicht gesetzt"},
+        )
+    )
     df = pd.DataFrame(st.session_state.results)
     st.dataframe(
         df[["model_id", "prompt_id", "technique", "ok",
