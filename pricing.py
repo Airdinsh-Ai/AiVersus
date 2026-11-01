@@ -6,12 +6,14 @@
 #
 
 """
-Preise in USD pro 1 Million Tokens (Input, Output) — Grundlage für "Total Cost".
+Preise in USD pro 1 Million Tokens (Input, Output) aus der allerersten Version
+(OpenAI/Google Gemini direkt, vor der Umstellung auf NVIDIA Build).
 
-ACHTUNG: Richtwerte, keine live abgefragten Preise. Vor der Abgabe gegen die
-aktuellen Anbieter-Seiten prüfen:
-  OpenAI:  https://openai.com/api/pricing/
-  Google:  https://ai.google.dev/gemini-api/docs/pricing
+Dient heute nur noch als Legacy-Fallback beim "Hinzufügen" eines Modells in app.py,
+falls dessen ID zufällig hier auftaucht - praktisch nie, da NVIDIA-Build-IDs anders
+aussehen ("org/modell" statt "anbieter:modell"). Die eigentliche, aktuelle Preisquelle
+ist die editierbare, nutzergeführte Liste in pricing.json (siehe Sidebar "LLM Pricing"
+und app.py: _cost_usd()).
 """
 
 PRICING_USD_PER_1M_TOKENS = {
@@ -21,11 +23,3 @@ PRICING_USD_PER_1M_TOKENS = {
     "google:gemini-2.5-flash": (0.30, 2.50),
     "google:gemini-2.5-pro": (1.25, 10.00),
 }
-
-
-def estimate_cost_usd(model_id: str, tokens_in, tokens_out) -> float:
-    """Geschätzte Kosten eines Aufrufs in USD. 0.0, wenn Tokens oder Preis fehlen."""
-    if tokens_in is None or tokens_out is None or model_id not in PRICING_USD_PER_1M_TOKENS:
-        return 0.0
-    price_in, price_out = PRICING_USD_PER_1M_TOKENS[model_id]
-    return round((tokens_in * price_in + tokens_out * price_out) / 1_000_000, 6)

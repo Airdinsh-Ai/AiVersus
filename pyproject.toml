@@ -11,3 +11,8 @@ dependencies = [
     "pypdf>=6.21.1",
     "streamlit>=1.66.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pyflakes>=4.1.0",
+]
