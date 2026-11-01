@@ -15,7 +15,6 @@ import io
 from dataclasses import dataclass
 from pathlib import Path
 
-import chromadb
 from openai import OpenAI
 
 EMBED_MODEL = "text-embedding-3-small"
@@ -56,6 +55,8 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
 
 class RagIndex:
     def __init__(self, api_key: str, persist_dir: str = "rag_store"):
+        import chromadb  # lazy - schwere Abhängigkeit, nur laden, wenn RAG tatsächlich genutzt wird
+
         self._client = OpenAI(api_key=api_key)
         self._collection = chromadb.PersistentClient(path=persist_dir).get_or_create_collection("documents")
 

@@ -232,7 +232,7 @@ def get_index(api_key: str) -> RagIndex:
     return RagIndex(api_key=api_key)
 
 
-@st.cache_data(ttl=300, show_spinner="Modellkatalog wird geladen ...")
+@st.cache_data(ttl=3600, show_spinner="Modellkatalog wird geladen ...")
 def _load_chat_models(api_key: str) -> list:
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=CATALOG_TIMEOUT_S, max_retries=0)
     return fetch_chat_models(client)
