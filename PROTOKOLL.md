@@ -11,6 +11,15 @@ nur gemockte Clients (kein API-Key vorhanden).
 Dieser Abschnitt wird während der Nacht laufend ergänzt (neueste Einträge oben
 innerhalb des Abschnitts).
 
+- Recherche für Schritt 3 (Pricing-Vorbefüllung): WebSearch nach
+  "NVIDIA Build pricing per million tokens" und WebFetch auf
+  build.nvidia.com/pricing (404) zeigen: NVIDIA Build hat keine eigene,
+  auffindbare, offizielle Preistabelle pro Modell - nur Drittanbieter-
+  Aggregatoren (anotherwrapper.com, pricepertoken.com) mit nicht
+  gegen NVIDIA verifizierten Zahlen. Konservative Entscheidung: KEINE
+  Vorbefüllung in pricing.json (leer lassen), da "offizielle
+  Anbieter-Seite" nicht erfüllbar ist. Preisfelder bleiben "–", bis
+  der Nutzer selbst Preise + Quelle einträgt.
 - `pricing.json` (Schritt 3) bewusst NICHT gitignored, anders als `availability.json`:
   availability.json ist flüchtige, account-/zeitabhängige Messung (gehört nicht ins
   Repo), pricing.json dagegen kuratierte, quellenbelegte Referenzdaten, die mit dem

@@ -60,6 +60,7 @@ CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierung
 MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
 AVAILABILITY_PATH = "availability.json"
 AVAILABILITY_CHECK_TIMEOUT_S = 20.0  # kurzes Zeitfenster pro Modell - reicht für den Mini-Call
+PRICING_JSON_PATH = "pricing.json"
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
 MODEL_COLOR_PALETTE = [
     "#6CA8FF", "#F59E4C", "#4CC9B0", "#D97757", "#9B8AFB",
@@ -95,6 +96,26 @@ def save_availability(models: dict) -> dict:
     return data
 
 
+def load_pricing_file() -> dict:
+    """{model_id: {"input", "output", "source", "updated"}} - nur Preise mit Quelle+Datum, die
+
+    gegen eine offizielle Anbieter-Seite verifiziert wurden (siehe PROTOKOLL.md: für NVIDIA Build
+    aktuell keine auffindbare offizielle Preistabelle, daher bewusst leer vorbefüllt).
+    """
+    if not os.path.exists(PRICING_JSON_PATH):
+        return {}
+    try:
+        with open(PRICING_JSON_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("models", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_pricing_file(models: dict) -> None:
+    with open(PRICING_JSON_PATH, "w", encoding="utf-8") as f:
+        json.dump({"models": models}, f, ensure_ascii=False, indent=2)
+
+
 if "prompts" not in st.session_state:
     st.session_state.prompts = [
         {"id": "p1", "text": "Erkläre RAG in 3 Sätzen.", "technique": "Zero-Shot Prompting"},
@@ -118,6 +139,8 @@ if "availability_data" not in st.session_state:
     st.session_state.availability_data = load_availability()
 if "availability_run" not in st.session_state:
     st.session_state.availability_run = None
+if "pricing_data" not in st.session_state:
+    st.session_state.pricing_data = load_pricing_file()
 
 
 def _original_message(e: Exception) -> str:
@@ -392,6 +415,54 @@ if st.session_state.availability_run is not None:
         time.sleep(0.5)
         st.rerun()
 
+# ---------------- Sidebar: LLM Pricing ----------------
+st.sidebar.divider()
+
+
+@st.dialog("LLM Pricing", width="large")
+def _pricing_dialog() -> None:
+    st.caption(
+        "Preise nur eintragen, wenn auf einer offiziellen Anbieter-Seite verifiziert - mit Quelle "
+        "und Stand-Datum. Unbekannt bleibt leer (wird als '–' angezeigt, nicht als 0)."
+    )
+    models_dict = st.session_state.pricing_data
+    rows = [
+        {"Modell": m, "Input $/1M": v.get("input"), "Output $/1M": v.get("output"),
+         "Quelle": v.get("source") or "", "Stand": v.get("updated") or ""}
+        for m, v in sorted(models_dict.items())
+    ]
+    pricing_df = pd.DataFrame(rows, columns=["Modell", "Input $/1M", "Output $/1M", "Quelle", "Stand"])
+    edited = st.data_editor(
+        pricing_df, num_rows="dynamic", use_container_width=True, key="pricing_editor",
+        column_config={
+            "Input $/1M": st.column_config.NumberColumn(format="%.4f"),
+            "Output $/1M": st.column_config.NumberColumn(format="%.4f"),
+            "Stand": st.column_config.TextColumn(help="z.B. 2026-11-02"),
+        },
+    )
+    col_save, col_close = st.columns(2)
+    if col_save.button("Speichern", type="primary", use_container_width=True):
+        new_models = {}
+        for _, r in edited.iterrows():
+            model_name = str(r["Modell"] or "").strip()
+            if not model_name:
+                continue
+            new_models[model_name] = {
+                "input": float(r["Input $/1M"]) if pd.notna(r["Input $/1M"]) else None,
+                "output": float(r["Output $/1M"]) if pd.notna(r["Output $/1M"]) else None,
+                "source": str(r["Quelle"]).strip() or None,
+                "updated": str(r["Stand"]).strip() or None,
+            }
+        st.session_state.pricing_data = new_models
+        save_pricing_file(new_models)
+        st.rerun()
+    if col_close.button("Schließen", use_container_width=True):
+        st.rerun()
+
+
+if st.sidebar.button("LLM Pricing"):
+    _pricing_dialog()
+
 # ---------------- Sidebar: RAG ----------------
 st.sidebar.header("RAG (optional)")
 st.sidebar.caption("Folgt in Schritt 7 (Embeddings über NVIDIA Build) - aktuell deaktiviert.")
@@ -436,8 +507,14 @@ model_pick = col_pick.selectbox(
 )
 if col_add.button("Hinzufügen", disabled=not model_pick, use_container_width=True):
     st.session_state.selected_models.append(model_pick)
-    known_price = PRICING_USD_PER_1M_TOKENS.get(model_pick, (0.0, 0.0))
-    st.session_state.model_prices[model_pick] = {"input": known_price[0], "output": known_price[1]}
+    priced = st.session_state.pricing_data.get(model_pick)
+    if priced and priced.get("input") is not None and priced.get("output") is not None:
+        st.session_state.model_prices[model_pick] = {"input": priced["input"], "output": priced["output"]}
+    else:
+        legacy = PRICING_USD_PER_1M_TOKENS.get(model_pick)  # alte OpenAI/Gemini-IDs, meist kein Treffer
+        st.session_state.model_prices[model_pick] = (
+            {"input": legacy[0], "output": legacy[1]} if legacy else {"input": 0.0, "output": 0.0}
+        )
     st.rerun()
 
 if st.session_state.selected_models:
