@@ -24,6 +24,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from openai import (
@@ -628,19 +629,40 @@ if not known:
     st.caption("Noch keine gespeicherten Läufe — nach dem ersten Benchmark erscheint hier der Verlauf.")
 else:
     chosen = st.multiselect("Modelle", known, default=known[:3])
+    TIMELINE_METRICS = ["generation_s", "tokens_per_s", "ttft_s", "latency_s", "tokens_out", "tokens_in", "cost_usd"]
     metric = st.selectbox(
-        "Metrik", ["latency_s", "tokens_out", "tokens_in", "cost_usd"],
-        format_func=lambda m: {"latency_s": "Latenz (s)", "tokens_out": "Output-Tokens",
-                               "tokens_in": "Input-Tokens", "cost_usd": "Kosten (USD)"}[m],
+        "Metrik", TIMELINE_METRICS,
+        format_func=lambda m: {
+            "generation_s": "Generierungszeit (s, ohne Warteschlange)", "tokens_per_s": "Tokens/Sekunde",
+            "ttft_s": "TTFT (s, inkl. Warteschlange)", "latency_s": "Gesamtlatenz (s, inkl. Warteschlange)",
+            "tokens_out": "Output-Tokens", "tokens_in": "Input-Tokens", "cost_usd": "Kosten (USD)",
+        }[m],
+        help="Generierungszeit/Tokens pro Sekunde spiegeln die Modell-Leistung - die Gesamtlatenz "
+             "misst bei NVIDIA Build (Freikontingent) vor allem die Warteschlange.",
     )
     if chosen:
         hist = store.load_for_models(chosen)
-        chart = (
-            hist.groupby([hist["timestamp"].dt.floor("min"), "model_id"])[metric].mean()
-            .reset_index().pivot(index="timestamp", columns="model_id", values=metric)
-        )
-        st.line_chart(chart)
-        st.caption(
-            f"{store.run_count()} Lauf/Läufe gespeichert. Voraussetzung: Der Anbieter hält die Modell-ID stabil — "
-            "bei einer Umbenennung reißt die Zeitreihe ab."
-        )
+        hist = hist.dropna(subset=[metric])
+        if hist.empty:
+            st.caption("Für diese Metrik liegen bei den gewählten Modellen noch keine Werte vor.")
+        else:
+            chart = (
+                hist.groupby([hist["timestamp"].dt.floor("min"), "model_id"])[metric].mean()
+                .reset_index().pivot(index="timestamp", columns="model_id", values=metric)
+            )
+            y_max = float(chart.max().max())
+            st.altair_chart(
+                alt.Chart(chart.reset_index().melt(id_vars="timestamp", var_name="model_id", value_name=metric))
+                .mark_line(point=True)
+                .encode(
+                    x="timestamp:T",
+                    y=alt.Y(f"{metric}:Q", scale=alt.Scale(domain=[0, y_max * 1.1 if y_max > 0 else 1])),
+                    color="model_id:N",
+                )
+                .properties(height=320),
+                use_container_width=True,
+            )
+            st.caption(
+                f"{store.run_count()} Lauf/Läufe gespeichert. Voraussetzung: Der Anbieter hält die Modell-ID stabil — "
+                "bei einer Umbenennung reißt die Zeitreihe ab."
+            )

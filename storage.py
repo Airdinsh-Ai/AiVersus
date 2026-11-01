@@ -34,12 +34,26 @@ CREATE TABLE IF NOT EXISTS results (
 );
 """
 
+# Spalten, die nach dem ersten Release ergänzt wurden - ALTER TABLE statt neuer SCHEMA-Version,
+# damit eine bestehende runs.db nicht neu angelegt werden muss.
+MIGRATIONS = [
+    ("ttft_s", "REAL"),
+    ("generation_s", "REAL"),
+    ("tokens_per_s", "REAL"),
+    ("reasoning_tokens", "INTEGER"),
+    ("sent_params", "TEXT"),
+]
+
 
 class RunStore:
     def __init__(self, db_path: str = "runs.db"):
         self.db_path = db_path
         with sqlite3.connect(self.db_path) as conn:
             conn.executescript(SCHEMA)
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(results)")}
+            for column, sql_type in MIGRATIONS:
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE results ADD COLUMN {column} {sql_type}")
 
     def save_results(self, results: list) -> int:
         """Speichert Ergebniszeilen; gleiche (run_id, model_id, prompt_id) werden überschrieben."""
@@ -49,11 +63,15 @@ class RunStore:
                 1 if r["ok"] else 0, r.get("response"), r.get("tokens_in"), r.get("tokens_out"),
                 r.get("latency_s"), r.get("cost_usd"), 1 if r.get("injected_context") else 0,
                 json.dumps(r.get("retrieved_sources", []), ensure_ascii=False),
+                r.get("ttft_s"), r.get("generation_s"), r.get("tokens_per_s"), r.get("reasoning_tokens"),
+                json.dumps(r.get("sent_params"), ensure_ascii=False) if r.get("sent_params") is not None else None,
             )
             for r in results
         ]
         with sqlite3.connect(self.db_path) as conn:
-            conn.executemany("INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.executemany(
+                "INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
+            )
         return len(rows)
 
     def load_for_models(self, model_ids: list) -> pd.DataFrame:
