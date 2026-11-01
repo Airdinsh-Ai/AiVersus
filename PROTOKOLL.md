@@ -15,8 +15,12 @@ innerhalb des Abschnitts).
 
 Alle 9 Punkte der Auftragsliste abgearbeitet, je ein Commit, jeweils Syntax-Check +
 Smoke-Test (meist `streamlit.testing.v1.AppTest`, teils mit gemocktem `openai.OpenAI`,
-da kein echter Key vorhanden war - siehe "Kein API-Key"-Regel). Commits (neueste oben):
+da kein echter Key vorhanden war - siehe "Kein API-Key"-Regel). Danach noch Zeit übrig,
+daher wie erlaubt aufgeräumt statt Neues erfunden (siehe `ee7e46e`: pyflakes über alle
+Hauptmodule laufen lassen, einzigen Fund - `pricing.py:estimate_cost_usd()`, seit der
+vorherigen Session unbenutzt - entfernt). Commits (neueste oben):
 
+- `ee7e46e` chore: toten Code entfernt, pyflakes als Dev-Tool ergänzt (Aufräumen)
 - `48c3e1f` docs: README komplett neu (EN Standard + DE), Screenshot-Platzhalter (Schritt 8)
 - `76ffe59` feat: Zweisprachigkeit EN/DE, Englisch als Standard (Schritt 7)
 - `de67211` style: dunkles Theme laut Design-Vorlage (Schritt 6)
