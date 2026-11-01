@@ -18,6 +18,7 @@ gespeichert (kein .env-Fallback, kein Logging, nicht in runs.db, nicht in Export
 
 import concurrent.futures
 import hashlib
+import html
 import json
 import threading
 import time
@@ -38,7 +39,7 @@ from openai import (
     RateLimitError,
 )
 
-from chat_client import call_chat_streaming
+from chat_client import StreamCancelled, call_chat_streaming
 from models import (
     SEPARATOR,
     build_dropdown_options,
@@ -86,6 +87,8 @@ if "model_prices" not in st.session_state:
     st.session_state.model_prices = {}
 if "last_successful_test_model" not in st.session_state:
     st.session_state.last_successful_test_model = None
+if "run" not in st.session_state:
+    st.session_state.run = None
 
 
 def _original_message(e: Exception) -> str:
@@ -114,6 +117,8 @@ def log_error_detail(context: str, e: Exception) -> None:
 
 def describe_api_error(e: Exception) -> str:
     """Kurze, deutsche Fehlermeldung ohne Account-/Function-IDs - Details gehen ins Terminal-Log."""
+    if isinstance(e, StreamCancelled):
+        return "Abgebrochen (Stop-Button)."
     if isinstance(e, TimeoutError):  # unser eigener Stream-Timeout (chat_client.py), kein Server-Fehler
         return f"Zeitüberschreitung: {e}"
     if isinstance(e, AuthenticationError):
@@ -420,7 +425,7 @@ sent_params_record = {
 }
 
 
-def _run_one_task(client, model_id, prompt, task_progress, progress_lock):
+def _run_one_task(client, model_id, prompt, task_progress, progress_lock, cancel_event):
     """Läuft in einem Worker-Thread - rührt nie st.session_state oder st.* an, nur den
 
     geteilten task_progress-Dict (für die Live-Anzeige im Hauptthread).
@@ -443,6 +448,7 @@ def _run_one_task(client, model_id, prompt, task_progress, progress_lock):
             on_progress=_on_progress,
             first_token_timeout_s=first_token_timeout_s,
             inter_token_timeout_s=inter_token_timeout_s,
+            cancel_event=cancel_event,
             **api_params,
         )
         exc = None
@@ -453,7 +459,7 @@ def _run_one_task(client, model_id, prompt, task_progress, progress_lock):
             "elapsed": result.duration_s if result else round(time.perf_counter() - call_start, 3),
             "first_token": True, "done": True,
         }
-    return model_id, prompt, result, exc, call_start
+    return result, exc, call_start
 
 
 def _cost_usd(model_id: str, tokens_in, tokens_out) -> float:
@@ -531,88 +537,180 @@ def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, cal
 
 
 # ---------------- Ausführung ----------------
-if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and prompts and nvidia_key)):
+# Läuft über mehrere Streamlit-Reruns statt einer einzigen blockierenden Schleife, sonst könnte
+# der Stop-Button nie dazwischenfunken: Start legt Executor/Futures in st.session_state.run ab,
+# jeder Rerun schöpft fertige Futures ab und stößt (falls noch was offen ist) den nächsten Rerun an.
+run_active = st.session_state.run is not None
+col_start, col_stop = st.columns([4, 1])
+start_clicked = col_start.button(
+    "▶ Benchmark starten", type="primary",
+    disabled=run_active or not (selected and prompts and nvidia_key),
+)
+stop_clicked = col_stop.button("■ Stop", disabled=not run_active)
+
+if start_clicked and not run_active:
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=chat_client_timeout_s, max_retries=0)
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tasks = [(m, p) for m in selected for p in prompts]
     st.session_state.results = []
-    progress = st.progress(0.0)
-    status_area = st.empty()
-
+    cancel_event = threading.Event()
     task_progress: dict = {}
     progress_lock = threading.Lock()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_CALLS, len(tasks)))
+    futures = {
+        executor.submit(_run_one_task, client, model_id, prompt, task_progress, progress_lock, cancel_event):
+            (model_id, prompt)
+        for model_id, prompt in tasks
+    }
+    st.session_state.run = {
+        "run_id": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        "executor": executor, "futures": futures, "pending": set(futures), "cancel_event": cancel_event,
+        "task_progress": task_progress, "progress_lock": progress_lock,
+        "total": len(tasks), "done_count": 0, "cancelled": False,
+    }
+    st.rerun()
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_CALLS, len(tasks))) as executor:
-        future_to_task = {
-            executor.submit(_run_one_task, client, model_id, prompt, task_progress, progress_lock): (model_id, prompt)
-            for model_id, prompt in tasks
-        }
-        pending = set(future_to_task)
-        done_count = 0
-        while pending:
-            done_now, pending = concurrent.futures.wait(
-                pending, timeout=0.5, return_when=concurrent.futures.FIRST_COMPLETED
+if stop_clicked and run_active:
+    run = st.session_state.run
+    run["cancel_event"].set()
+    run["cancelled"] = True
+    affected = [f"{m}/{p['id']}" for f, (m, p) in run["futures"].items() if f in run["pending"]]
+    print(
+        f"[{datetime.now(timezone.utc).isoformat()}] ABBRUCH angefordert - "
+        f"betroffene Calls: {', '.join(affected) if affected else '(keine mehr offen)'}",
+        flush=True,
+    )
+    run["executor"].shutdown(wait=False, cancel_futures=True)
+    st.rerun()
+
+if st.session_state.run is not None:
+    run = st.session_state.run
+
+    for future in [f for f in run["pending"] if f.done()]:
+        run["pending"].discard(future)
+        model_id, prompt = run["futures"][future]
+        try:
+            result, exc, call_start = future.result()
+        except concurrent.futures.CancelledError:
+            result, exc, call_start = None, StreamCancelled("Vor dem Start abgebrochen."), time.perf_counter()
+        row = _build_result_row(run["run_id"], model_id, prompt, result, exc, call_start)
+        st.session_state.results.append(row)
+        store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
+        run["done_count"] += 1
+
+    st.progress(run["done_count"] / run["total"], text=f"{run['done_count']}/{run['total']} abgeschlossen")
+    lines = []
+    with run["progress_lock"]:
+        for model_id, prompt in run["futures"].values():
+            info = run["task_progress"].get((model_id, prompt["id"]))
+            if info is None:
+                lines.append(f"- {model_id} · {prompt['id']}: wartet auf freien Slot ...")
+            elif info["done"]:
+                lines.append(f"- {model_id} · {prompt['id']}: fertig ({info['elapsed']:.1f} s)")
+            elif not info["first_token"]:
+                lines.append(f"- {model_id} · {prompt['id']}: in der NVIDIA-Warteschlange - wartet seit {info['elapsed']:.0f} s")
+            else:
+                lines.append(f"- {model_id} · {prompt['id']}: generiert ... ({info['elapsed']:.0f} s)")
+    st.markdown("\n".join(lines))
+
+    if not run["pending"]:
+        run["executor"].shutdown(wait=False)
+        if run["cancelled"]:
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] ABBRUCH abgeschlossen - "
+                f"{run['done_count']}/{run['total']} Calls fertig.",
+                flush=True,
             )
-            for future in done_now:
-                model_id, prompt, result, exc, call_start = future.result()
-                row = _build_result_row(run_id, model_id, prompt, result, exc, call_start)
-                st.session_state.results.append(row)
-                store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
-                done_count += 1
+            st.warning(f"Lauf abgebrochen – {run['done_count']} von {run['total']} Calls fertig.")
+        else:
+            st.success(f"Fertig - {run['done_count']}/{run['total']} Calls.")
+        st.session_state.run = None
+    else:
+        time.sleep(0.4)
+        st.rerun()
 
-            lines = []
-            with progress_lock:
-                for model_id, prompt in tasks:
-                    info = task_progress.get((model_id, prompt["id"]))
-                    if info is None:
-                        lines.append(f"- {model_id} · {prompt['id']}: wartet auf freien Slot ...")
-                    elif info["done"]:
-                        lines.append(f"- {model_id} · {prompt['id']}: fertig ({info['elapsed']:.1f} s)")
-                    elif not info["first_token"]:
-                        lines.append(f"- {model_id} · {prompt['id']}: in der NVIDIA-Warteschlange - wartet seit {info['elapsed']:.0f} s")
-                    else:
-                        lines.append(f"- {model_id} · {prompt['id']}: generiert ... ({info['elapsed']:.0f} s)")
-            status_area.markdown("\n".join(lines))
-            progress.progress(done_count / len(tasks), text=f"{done_count}/{len(tasks)} abgeschlossen")
+def _fmt(value, suffix: str = "", digits: int = 2) -> str:
+    if value is None:
+        return "–"
+    return f"{value:.{digits}f}{suffix}" if isinstance(value, float) else f"{value}{suffix}"
 
-    status_area.empty()
-    progress.progress(1.0, text="Fertig")
+
+def _render_result_card(row: dict) -> str:
+    color = model_color(row["model_id"])
+    sp = row.get("sent_params") or {}
+    params_line = (
+        f"temperature={sp.get('temperature')}, top_p={sp.get('top_p')}, max_tokens={sp.get('max_tokens')}, "
+        f"seed={sp.get('seed') if sp.get('seed') is not None else 'nicht gesetzt'}"
+    )
+    if sp.get("dropped_param"):
+        params_line += f" (ohne '{sp['dropped_param']}', von NVIDIA Build abgelehnt)"
+    metrics = (
+        f"TTFT {_fmt(row.get('ttft_s'), ' s')} · Gen. {_fmt(row.get('generation_s'), ' s')} · "
+        f"Tokens {row.get('tokens_in', '–')}/{row.get('tokens_out', '–')}"
+        + (f" (davon {row['reasoning_tokens']} Reasoning)" if row.get("reasoning_tokens") else "")
+        + f" · {_fmt(row.get('tokens_per_s'), ' Tok/s', 1)} · ${row.get('cost_usd', 0.0):.6f}"
+    )
+    status_html = "" if row["ok"] else "<div style='color:#E85D75;font-weight:600;margin-bottom:6px;'>Fehler</div>"
+    reasoning_html = ""
+    if row.get("reasoning"):
+        reasoning_html = (
+            "<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>Reasoning</summary>"
+            f"<div style='white-space:pre-wrap;margin-top:6px;font-size:13px;'>{html.escape(row['reasoning'])}</div>"
+            "</details>"
+        )
+    return f"""
+    <div style="min-width:320px;max-width:380px;flex:0 0 auto;background:#14171C;border:1px solid #252A31;
+                border-radius:12px;padding:16px;color:#E7E9EC;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="color:{color};font-size:18px;">●</span>
+        <strong>{html.escape(row['model_id'])}</strong>
+      </div>
+      {status_html}
+      <div style="font-size:13px;color:#9AA3AE;margin-bottom:8px;">{metrics}</div>
+      <div style="white-space:pre-wrap;font-size:14px;">{html.escape(row['response'] or '')}</div>
+      {reasoning_html}
+      <div style="font-size:12px;color:#7D8691;margin-top:10px;">{html.escape(params_line)}</div>
+    </div>
+    """
+
 
 # ---------------- Ergebnisse ----------------
 if st.session_state.results:
     st.subheader("Ergebnisse")
-    last_params = st.session_state.results[-1]["sent_params"]
-    st.caption(
-        "Gesendete Parameter (Vorgabe): temperature={temperature}, top_p={top_p}, max_tokens={max_tokens}, "
-        "seed={seed}, System-Prompt={system_prompt}".format(
-            **{**last_params, "seed": last_params["seed"] if last_params["seed"] is not None else "nicht gesetzt",
-               "system_prompt": "gesetzt" if last_params["system_prompt"] else "nicht gesetzt"},
-        )
-    )
+
     dropped_by_model = {
         r["model_id"] for r in st.session_state.results if r["sent_params"].get("dropped_param")
     }
     if dropped_by_model:
         st.caption(
             "Bei manchen Modellen wurde nach einem 400-Fehler ein Parameter entfernt und ohne ihn "
-            f"wiederholt - betroffen: {', '.join(sorted(dropped_by_model))}. Details pro Zeile im Export (JSON)."
+            f"wiederholt - betroffen: {', '.join(sorted(dropped_by_model))}. Details pro Karte/Export."
         )
+
+    by_prompt: dict = {}
+    for r in st.session_state.results:
+        by_prompt.setdefault(r["prompt_id"], []).append(r)
+    prompt_order = [p["id"] for p in st.session_state.prompts if p["id"] in by_prompt]
+    prompt_order += [pid for pid in by_prompt if pid not in prompt_order]  # Prompt inzwischen gelöscht
+
+    for prompt_id in prompt_order:
+        prompt_text = next((p["text"] for p in st.session_state.prompts if p["id"] == prompt_id), prompt_id)
+        st.markdown(f"**{prompt_id} · {prompt_text}**")
+        cards = "".join(_render_result_card(r) for r in by_prompt[prompt_id])
+        st.markdown(
+            f"<div style='display:flex;gap:16px;overflow-x:auto;padding-bottom:12px;'>{cards}</div>",
+            unsafe_allow_html=True,
+        )
+
     df = pd.DataFrame(st.session_state.results)
-    st.dataframe(
-        df[["model_id", "prompt_id", "technique", "ok",
-            "ttft_s", "generation_s", "latency_s", "tokens_in", "tokens_out",
-            "tokens_per_s", "reasoning_tokens", "cost_usd", "response"]],
-        use_container_width=True,
-    )
     st.caption(f"Geschätzte Gesamtkosten dieses Laufs: ${df['cost_usd'].sum():.6f} (deine Preise aus der Modell-Liste oben)")
 
-    reasoning_rows = [r for r in st.session_state.results if r.get("reasoning")]
-    if reasoning_rows:
-        with st.expander(f"Reasoning ({len(reasoning_rows)} Zeile/n mit Denkprozess)"):
-            for r in reasoning_rows:
-                st.markdown(f"**{r['model_id']} · {r['prompt_id']}**")
-                st.write(r["reasoning"])
-                st.divider()
+    with st.expander("Alle Ergebnisse als Tabelle"):
+        st.dataframe(
+            df[["model_id", "prompt_id", "technique", "ok",
+                "ttft_s", "generation_s", "latency_s", "tokens_in", "tokens_out",
+                "tokens_per_s", "reasoning_tokens", "cost_usd", "response"]],
+            use_container_width=True,
+        )
 
     run_id = st.session_state.results[0]["run_id"]
     col_json, col_csv = st.columns(2)
