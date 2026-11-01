@@ -40,7 +40,8 @@ from openai import (
     RateLimitError,
 )
 
-from chat_client import StreamCancelled, call_chat_streaming
+from chat_client import NoFirstTokenTimeout, NoFurtherTokenTimeout, StreamCancelled, call_chat_streaming
+from i18n import make_translator
 from models import (
     SEPARATOR,
     build_dropdown_options,
@@ -65,13 +66,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+if "lang" not in st.session_state:
+    st.session_state.lang = "en"  # Englisch ist Standard
+lang_choice = st.sidebar.radio(
+    "Language / Sprache", ["EN", "DE"], horizontal=True,
+    index=0 if st.session_state.lang == "en" else 1, key="lang_picker",
+)
+st.session_state.lang = "en" if lang_choice == "EN" else "de"
+t = make_translator(st.session_state.lang)
+
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierungs-Warteschlange
 MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
 AVAILABILITY_PATH = "availability.json"
 AVAILABILITY_CHECK_TIMEOUT_S = 20.0  # kurzes Zeitfenster pro Modell - reicht für den Mini-Call
 PRICING_JSON_PATH = "pricing.json"
-TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
+TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", t("main.prompts.other_technique")]
 MODEL_COLOR_PALETTE = [
     "#6CA8FF", "#F59E4C", "#4CC9B0", "#D97757", "#9B8AFB",
     "#E85D75", "#7FD858", "#F2B34A", "#5AC8FA", "#C77DFF",
@@ -178,28 +188,32 @@ def log_error_detail(context: str, e: Exception) -> None:
 
 
 def describe_api_error(e: Exception) -> str:
-    """Kurze, deutsche Fehlermeldung ohne Account-/Function-IDs - Details gehen ins Terminal-Log."""
+    """Kurze, übersetzte Fehlermeldung ohne Account-/Function-IDs - Details gehen ins Terminal-Log."""
     if isinstance(e, StreamCancelled):
-        return "Abgebrochen (Stop-Button)."
-    if isinstance(e, TimeoutError):  # unser eigener Stream-Timeout (chat_client.py), kein Server-Fehler
-        return f"Zeitüberschreitung: {e}"
+        return t("error.cancelled")
+    if isinstance(e, NoFirstTokenTimeout):
+        return t("error.no_first_token", seconds=f"{e.elapsed_s:.0f}")
+    if isinstance(e, NoFurtherTokenTimeout):
+        return t("error.no_further_token", seconds=f"{e.elapsed_s:.0f}")
+    if isinstance(e, TimeoutError):  # sonstiger eigener Stream-Timeout, kein Server-Fehler
+        return f"{t('error.no_further_token', seconds='?')} ({e})"
     if isinstance(e, AuthenticationError):
-        return "API-Key ungültig oder abgelehnt (401)."
+        return t("error.auth")
     if isinstance(e, RateLimitError):
-        return "Rate-Limit bei NVIDIA Build erreicht (429) - kurz warten und erneut versuchen."
+        return t("error.rate_limit")
     if isinstance(e, NotFoundError):
-        return "Modell nicht gefunden oder für diesen Account nicht verfügbar (404)."
+        return t("error.not_found")
     if isinstance(e, APIStatusError) and e.status_code == 410:
-        return "Modell nicht mehr verfügbar (410) - bitte ein anderes Modell wählen."
+        return t("error.gone")
     if isinstance(e, APIStatusError):
-        return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code})."
+        return t("error.status", status=e.status_code)
     if isinstance(e, APITimeoutError):
-        return "Zeitüberschreitung auf Transport-Ebene - keine Antwort von NVIDIA Build erhalten."
+        return t("error.transport_timeout")
     if isinstance(e, APIConnectionError):
-        return "Verbindung zu NVIDIA Build fehlgeschlagen (Netzwerk)."
+        return t("error.connection")
     if isinstance(e, APIError):
-        return "Verbindung zu NVIDIA Build fehlgeschlagen."
-    return "Unbekannter Fehler beim API-Aufruf."
+        return t("error.api")
+    return t("error.unknown")
 
 
 def _is_definitively_unavailable(e: Exception) -> bool:
@@ -255,57 +269,57 @@ def _load_embedding_models(api_key: str) -> list:
 
 
 # ---------------- Sidebar: API-Key ----------------
-st.sidebar.header("NVIDIA Build API-Key")
+st.sidebar.header(t("sidebar.api_key.header"))
 nvidia_key = st.sidebar.text_input(
-    "API-Key",
+    t("sidebar.api_key.label"),
     type="password",
     placeholder="nvapi-...",
     key="nvidia_api_key",
-    help="Nur für diese Sitzung im Speicher - wird nicht geloggt, nicht gespeichert, nicht exportiert.",
+    help=t("sidebar.api_key.help"),
 )
 
 # ---------------- Sidebar: Timeouts ----------------
 st.sidebar.divider()
-st.sidebar.subheader("Timeouts")
-st.sidebar.caption("NVIDIA Build (Freikontingent) kann vor dem ersten Token mehrere Minuten Warteschlange haben.")
+st.sidebar.subheader(t("sidebar.timeouts.header"))
+st.sidebar.caption(t("sidebar.timeouts.caption"))
 first_token_timeout_s = st.sidebar.number_input(
-    "Warten auf erstes Token (s)", min_value=10, max_value=600, value=300, step=10,
+    t("sidebar.timeouts.first_token_label"), min_value=10, max_value=600, value=300, step=10,
 )
 inter_token_timeout_s = st.sidebar.number_input(
-    "Danach: kein weiteres Token (s)", min_value=5, max_value=300, value=60, step=5,
+    t("sidebar.timeouts.inter_token_label"), min_value=5, max_value=300, value=60, step=5,
 )
 chat_client_timeout_s = first_token_timeout_s + 30  # Transport-Timeout muss größer sein als unser eigenes
 
 # ---------------- Sidebar: Verbindungstest ----------------
 st.sidebar.divider()
-st.sidebar.subheader("Verbindungstest")
-st.sidebar.caption("Lädt zuerst den Modellkatalog (prüft den Key), dann ein kurzer Testaufruf an ein kleines Modell daraus.")
-if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
+st.sidebar.subheader(t("sidebar.test.header"))
+st.sidebar.caption(t("sidebar.test.caption"))
+if st.sidebar.button(t("sidebar.test.button"), disabled=not nvidia_key):
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=chat_client_timeout_s, max_retries=0)
     try:
         chat_models = fetch_chat_models(client)  # ungecacht - der Test soll den Key gerade neu prüfen
     except Exception as e:
         st.sidebar.error(describe_api_error(e))
     else:
-        st.sidebar.success(f"Key gültig - {len(chat_models)} Chat-Modelle verfügbar.")
+        st.sidebar.success(t("sidebar.test.key_valid", count=len(chat_models)))
 
-        with st.sidebar.expander("Katalog-Diagnose"):
+        with st.sidebar.expander(t("sidebar.test.catalog_diagnostics")):
             namespace_counts = Counter(m.split("/", 1)[0] for m in chat_models if "/" in m)
             without_namespace = [m for m in chat_models if "/" not in m]
             st.write(
-                "**Namespaces:** "
+                t("sidebar.test.namespaces_label") + " "
                 + ", ".join(f"{ns}: {count}" for ns, count in sorted(namespace_counts.items()))
             )
             if without_namespace:
-                st.write(f"**Ohne Namespace ({len(without_namespace)}):**", without_namespace)
-            st.write("**Alle Chat-Modell-IDs:**")
+                st.write(t("sidebar.test.without_namespace_label", count=len(without_namespace)), without_namespace)
+            st.write(t("sidebar.test.all_ids_label"))
             st.code("\n".join(sorted(chat_models)))
 
         chat_models_by_recency = fetch_chat_models_by_recency(client)
         preferred = [st.session_state.last_successful_test_model] if st.session_state.last_successful_test_model else []
         candidates = pick_quick_test_candidates(chat_models_by_recency, limit=5, preferred=preferred)
         if not candidates:
-            st.sidebar.warning("Kein passendes Modell im Katalog gefunden.")
+            st.sidebar.warning(t("sidebar.test.no_model_found"))
         else:
             status_box = st.sidebar.empty()
             text_box = st.sidebar.empty()
@@ -313,11 +327,11 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
 
             def _on_progress(elapsed_s: float, partial_text: str, got_first_token: bool) -> None:
                 if not got_first_token:
-                    status_box.caption(f"in der NVIDIA-Warteschlange - wartet seit {elapsed_s:.0f} s ...")
+                    status_box.caption(t("sidebar.test.queue_status", elapsed=elapsed_s))
                 else:
-                    status_box.caption(f"generiert ... ({elapsed_s:.0f} s)")
+                    status_box.caption(t("sidebar.test.generating_status", elapsed=elapsed_s))
                 if partial_text:
-                    text_box.markdown(f"*(läuft)* {partial_text}")
+                    text_box.markdown(t("sidebar.test.running_prefix", text=partial_text))
 
             sent_params = {"temperature": 0.2, "max_tokens": 20}
             for candidate in candidates:
@@ -325,7 +339,7 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
                 print(f"[{datetime.now(timezone.utc).isoformat()}] START {candidate} (Verbindungstest)", flush=True)
                 result = call_chat_streaming(
                     client, candidate,
-                    [{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
+                    [{"role": "user", "content": t("sidebar.test.prompt")}],
                     on_progress=_on_progress,
                     first_token_timeout_s=first_token_timeout_s,
                     inter_token_timeout_s=inter_token_timeout_s,
@@ -342,46 +356,46 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
                 test_model = candidate
                 if result.ok or not _is_definitively_unavailable(result.error):
                     break  # Erfolg, oder ein Fehler, der auch bei anderen Modellen käme (z.B. 401)
-                st.sidebar.caption(f"{candidate}: für diesen Account nicht verfügbar - nächstes Modell ...")
+                st.sidebar.caption(t("sidebar.test.unavailable_trying_next", model=candidate))
 
             status_box.empty()
             text_box.empty()
             if result.ok:
                 st.session_state.last_successful_test_model = test_model
-                st.sidebar.success(f"Testaufruf an {test_model} beantwortet ({result.duration_s} s).")
+                st.sidebar.success(t("sidebar.test.answered", model=test_model, duration=result.duration_s))
                 if len(tried) > 1:
-                    st.sidebar.caption(f"Nicht verfügbar probiert: {', '.join(tried[:-1])}")
-                st.sidebar.write("**Antwort:**", result.content)
-                st.sidebar.write("**Gesendete Parameter:**", {"model": test_model, **sent_params})
+                    st.sidebar.caption(t("sidebar.test.tried_unavailable", models=", ".join(tried[:-1])))
+                st.sidebar.write(t("sidebar.test.answer_label"), result.content)
+                st.sidebar.write(t("sidebar.test.params_sent_label"), {"model": test_model, **sent_params})
                 st.sidebar.write(
-                    "**usage (roh von NVIDIA Build):**",
+                    t("sidebar.test.usage_label"),
                     {
                         "prompt_tokens": result.tokens_in,
                         "completion_tokens": result.tokens_out,
                         "reasoning_tokens": result.reasoning_tokens,
                     },
                 )
-                st.sidebar.write("**TTFT / Generierungszeit:**", f"{result.ttft_s} s / {result.generation_s} s")
-                st.sidebar.write("**finish_reason:**", result.finish_reason)
+                st.sidebar.write(t("sidebar.test.ttft_label"), f"{result.ttft_s} s / {result.generation_s} s")
+                st.sidebar.write(t("sidebar.test.finish_reason_label"), result.finish_reason)
                 if result.reasoning:
-                    with st.sidebar.expander("Reasoning"):
+                    with st.sidebar.expander(t("common.reasoning")):
                         st.write(result.reasoning)
             else:
                 st.sidebar.error(describe_api_error(result.error))
 
 # ---------------- Sidebar: Verfügbarkeit ----------------
 st.sidebar.divider()
-st.sidebar.subheader("Verfügbarkeit")
+st.sidebar.subheader(t("sidebar.availability.header"))
 availability_run_active = st.session_state.availability_run is not None
 last_checked = st.session_state.availability_data.get("checked_at")
 if last_checked:
-    st.sidebar.caption(f"Letzte Prüfung: {last_checked}")
+    st.sidebar.caption(t("sidebar.availability.last_checked", timestamp=last_checked))
 else:
-    st.sidebar.caption("Noch nicht geprüft.")
+    st.sidebar.caption(t("sidebar.availability.never_checked"))
 
 if st.sidebar.button(
-    "Verfügbarkeit prüfen", disabled=availability_run_active or not nvidia_key,
-    help="Mini-Call (max_tokens=1) an jedes Katalog-Modell, parallel, kurzer Timeout.",
+    t("sidebar.availability.button"), disabled=availability_run_active or not nvidia_key,
+    help=t("sidebar.availability.help"),
 ):
     client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=AVAILABILITY_CHECK_TIMEOUT_S + 10, max_retries=0)
     try:
@@ -411,7 +425,8 @@ if st.session_state.availability_run is not None:
         avail_run["done_count"] += 1
 
     st.sidebar.progress(
-        avail_run["done_count"] / avail_run["total"], text=f"{avail_run['done_count']}/{avail_run['total']} geprüft",
+        avail_run["done_count"] / avail_run["total"],
+        text=t("sidebar.availability.progress", done=avail_run["done_count"], total=avail_run["total"]),
     )
     if not avail_run["pending"]:
         avail_run["executor"].shutdown(wait=False)
@@ -425,7 +440,7 @@ if st.session_state.availability_run is not None:
             flush=True,
         )
         st.session_state.availability_run = None
-        st.sidebar.success(f"{n_avail} verfügbar, {n_unavail} nicht verfügbar, {n_slow} langsam/unbekannt.")
+        st.sidebar.success(t("sidebar.availability.result", available=n_avail, unavailable=n_unavail, slow=n_slow))
         st.rerun()
     else:
         time.sleep(0.5)
@@ -435,61 +450,62 @@ if st.session_state.availability_run is not None:
 st.sidebar.divider()
 
 
-@st.dialog("LLM Pricing", width="large")
+@st.dialog(t("sidebar.pricing.dialog_title"), width="large")
 def _pricing_dialog() -> None:
-    st.caption(
-        "Preise nur eintragen, wenn auf einer offiziellen Anbieter-Seite verifiziert - mit Quelle "
-        "und Stand-Datum. Unbekannt bleibt leer (wird als '–' angezeigt, nicht als 0)."
+    st.caption(t("sidebar.pricing.caption"))
+    col_model, col_input, col_output, col_source, col_updated = (
+        t("sidebar.pricing.col_model"), t("sidebar.pricing.col_input"), t("sidebar.pricing.col_output"),
+        t("sidebar.pricing.col_source"), t("sidebar.pricing.col_updated"),
     )
     models_dict = st.session_state.pricing_data
     rows = [
-        {"Modell": m, "Input $/1M": v.get("input"), "Output $/1M": v.get("output"),
-         "Quelle": v.get("source") or "", "Stand": v.get("updated") or ""}
+        {col_model: m, col_input: v.get("input"), col_output: v.get("output"),
+         col_source: v.get("source") or "", col_updated: v.get("updated") or ""}
         for m, v in sorted(models_dict.items())
     ]
-    pricing_df = pd.DataFrame(rows, columns=["Modell", "Input $/1M", "Output $/1M", "Quelle", "Stand"])
+    pricing_df = pd.DataFrame(rows, columns=[col_model, col_input, col_output, col_source, col_updated])
     edited = st.data_editor(
         pricing_df, num_rows="dynamic", use_container_width=True, key="pricing_editor",
         column_config={
-            "Input $/1M": st.column_config.NumberColumn(format="%.4f"),
-            "Output $/1M": st.column_config.NumberColumn(format="%.4f"),
-            "Stand": st.column_config.TextColumn(help="z.B. 2026-11-02"),
+            col_input: st.column_config.NumberColumn(format="%.4f"),
+            col_output: st.column_config.NumberColumn(format="%.4f"),
+            col_updated: st.column_config.TextColumn(help=t("sidebar.pricing.col_updated_help")),
         },
     )
     col_save, col_close = st.columns(2)
-    if col_save.button("Speichern", type="primary", use_container_width=True):
+    if col_save.button(t("sidebar.pricing.save"), type="primary", use_container_width=True):
         new_models = {}
         for _, r in edited.iterrows():
-            model_name = str(r["Modell"] or "").strip()
+            model_name = str(r[col_model] or "").strip()
             if not model_name:
                 continue
             new_models[model_name] = {
-                "input": float(r["Input $/1M"]) if pd.notna(r["Input $/1M"]) else None,
-                "output": float(r["Output $/1M"]) if pd.notna(r["Output $/1M"]) else None,
-                "source": str(r["Quelle"]).strip() or None,
-                "updated": str(r["Stand"]).strip() or None,
+                "input": float(r[col_input]) if pd.notna(r[col_input]) else None,
+                "output": float(r[col_output]) if pd.notna(r[col_output]) else None,
+                "source": str(r[col_source]).strip() or None,
+                "updated": str(r[col_updated]).strip() or None,
             }
         st.session_state.pricing_data = new_models
         save_pricing_file(new_models)
         st.rerun()
-    if col_close.button("Schließen", use_container_width=True):
+    if col_close.button(t("sidebar.pricing.close"), use_container_width=True):
         st.rerun()
 
 
-if st.sidebar.button("LLM Pricing"):
+if st.sidebar.button(t("sidebar.pricing.button")):
     _pricing_dialog()
 
 # ---------------- Sidebar: RAG ----------------
-st.sidebar.header("RAG (optional)")
-use_rag = st.sidebar.checkbox("RAG-Kontext verwenden", value=False)
+st.sidebar.header(t("sidebar.rag.header"))
+use_rag = st.sidebar.checkbox(t("sidebar.rag.checkbox"), value=False)
 index = None
 rag_ready = False
 top_k = 4
 
 if not use_rag:
-    st.sidebar.caption("Deaktiviert - Prompts gehen ohne eigene Dokumente an die Modelle.")
+    st.sidebar.caption(t("sidebar.rag.disabled_caption"))
 elif not nvidia_key:
-    st.sidebar.caption("RAG braucht den NVIDIA Build API-Key (Embeddings).")
+    st.sidebar.caption(t("sidebar.rag.no_key_caption"))
 else:
     try:
         embedding_models = _load_embedding_models(nvidia_key)
@@ -497,41 +513,41 @@ else:
         st.sidebar.error(describe_api_error(e))
         embedding_models = []
     if not embedding_models:
-        st.sidebar.warning("Kein Embedding-Modell im Katalog gefunden.")
+        st.sidebar.warning(t("sidebar.rag.no_embed_model"))
     else:
-        embed_model = st.sidebar.selectbox("Embedding-Modell", embedding_models, key="embed_model_pick")
+        embed_model = st.sidebar.selectbox(t("sidebar.rag.embed_model_label"), embedding_models, key="embed_model_pick")
         index = get_index(nvidia_key, embed_model)
-        top_k = st.sidebar.slider("Top-K Chunks", 1, 10, 4)
+        top_k = st.sidebar.slider(t("sidebar.rag.topk_label"), 1, 10, 4)
         uploads = st.sidebar.file_uploader(
-            "Dokumente (PDF, TXT, MD)", type=["pdf", "txt", "md"], accept_multiple_files=True,
+            t("sidebar.rag.upload_label"), type=["pdf", "txt", "md"], accept_multiple_files=True,
         )
         col_build, col_clear = st.sidebar.columns(2)
-        if col_build.button("Index aufbauen", disabled=not uploads, use_container_width=True):
-            with st.sidebar, st.spinner("Chunking + Embedding ..."):
+        if col_build.button(t("sidebar.rag.build_button"), disabled=not uploads, use_container_width=True):
+            with st.sidebar, st.spinner(t("sidebar.rag.build_spinner")):
                 for f in uploads:
                     try:
                         index.add_document(f.name, f.getvalue())
                     except Exception as e:
                         st.sidebar.error(f"{f.name}: {describe_api_error(e)}")
-        if col_clear.button("Index leeren", use_container_width=True):
+        if col_clear.button(t("sidebar.rag.clear_button"), use_container_width=True):
             index.clear()
 
         for name, n in index.sources().items():
-            st.sidebar.caption(f"· {name} ({n} Chunks)")
+            st.sidebar.caption(t("sidebar.rag.source_line", name=name, count=n))
 
         rag_ready = index.document_count() > 0
         if not rag_ready:
-            st.sidebar.caption("Noch kein Dokument indexiert - der Lauf geht ohne Kontext.")
+            st.sidebar.caption(t("sidebar.rag.not_indexed_caption"))
 
 st.sidebar.divider()
-st.sidebar.caption("NVIDIA Build · Key nur in dieser Sitzung, nirgends gespeichert.")
+st.sidebar.caption(t("sidebar.footer"))
 
 # ---------------- Modelle ----------------
 st.title("AiVersus")
-st.subheader("Modelle")
+st.subheader(t("main.models.header"))
 
 if not nvidia_key:
-    st.caption("Trage deinen API-Key ein (Sidebar), um den Modellkatalog zu laden.")
+    st.caption(t("main.models.no_key_caption"))
     chat_models = []
 else:
     try:
@@ -553,15 +569,16 @@ addable_choices = [m for m in available_choices if m not in st.session_state.sel
 
 hidden = st.session_state.unavailable_models | hard_unavailable
 if hidden:
-    st.caption(f"Nicht verfügbar (ausgeblendet): {', '.join(sorted(hidden))}")
+    st.caption(t("main.models.hidden_caption", models=", ".join(sorted(hidden))))
 
+slow_suffix = t("main.models.slow_suffix")
 col_pick, col_add = st.columns([5, 1])
 model_pick = col_pick.selectbox(
-    "Modell hinzufügen", addable_choices, index=None, placeholder="Modell suchen ...",
+    t("main.models.add_label"), addable_choices, index=None, placeholder=t("main.models.add_placeholder"),
     key="model_picker", label_visibility="collapsed",
-    format_func=lambda m: f"{m} (langsam/unbekannt)" if m in slow_models else m,
+    format_func=lambda m: f"{m}{slow_suffix}" if m in slow_models else m,
 )
-if col_add.button("Hinzufügen", disabled=not model_pick, use_container_width=True):
+if col_add.button(t("main.models.add_button"), disabled=not model_pick, use_container_width=True):
     st.session_state.selected_models.append(model_pick)
     priced = st.session_state.pricing_data.get(model_pick)
     if priced and priced.get("input") is not None and priced.get("output") is not None:
@@ -575,14 +592,11 @@ if col_add.button("Hinzufügen", disabled=not model_pick, use_container_width=Tr
 
 if st.session_state.selected_models:
     if len(st.session_state.selected_models) >= 5:
-        st.caption(
-            "Ab 5 Modellen kann NVIDIA Build (Freikontingent) insgesamt länger dauern "
-            "(parallel, aber begrenzt) - kein hartes Limit, nur ein Hinweis."
-        )
+        st.caption(t("main.models.many_models_caption"))
     header_dot, header_name, header_in, header_out, header_del = st.columns([0.4, 3, 1.3, 1.3, 0.5])
-    header_name.caption("Modell")
-    header_in.caption("Input $/1M")
-    header_out.caption("Output $/1M")
+    header_name.caption(t("main.models.col_model"))
+    header_in.caption(t("main.models.col_input"))
+    header_out.caption(t("main.models.col_output"))
 
     to_remove = None
     for model_id in st.session_state.selected_models:
@@ -593,11 +607,11 @@ if st.session_state.selected_models:
         col_name.write(model_id)
         price = st.session_state.model_prices.setdefault(model_id, {"input": 0.0, "output": 0.0})
         price["input"] = col_in.number_input(
-            "Input $/1M", value=price["input"], step=0.01, format="%.4f",
+            t("main.models.col_input"), value=price["input"], step=0.01, format="%.4f",
             key=f"price_in_{model_id}", label_visibility="collapsed",
         )
         price["output"] = col_out.number_input(
-            "Output $/1M", value=price["output"], step=0.01, format="%.4f",
+            t("main.models.col_output"), value=price["output"], step=0.01, format="%.4f",
             key=f"price_out_{model_id}", label_visibility="collapsed",
         )
         if col_del.button("✕", key=f"del_model_{model_id}"):
@@ -607,23 +621,27 @@ if st.session_state.selected_models:
         st.session_state.model_prices.pop(to_remove, None)
         st.rerun()
 else:
-    st.caption("Noch keine Modelle hinzugefügt.")
+    st.caption(t("main.models.none_added_caption"))
 
 selected = st.session_state.selected_models
 
 # ---------------- Prompt-Suite ----------------
-st.subheader("Prompt-Suite")
+st.subheader(t("main.prompts.header"))
 
+other_technique = t("main.prompts.other_technique")
 to_delete = None
 for i, p in enumerate(st.session_state.prompts):
     col_text, col_tech, col_del = st.columns([6, 3, 1])
     p["text"] = col_text.text_area(p["id"], value=p["text"], key=f"text_{p['id']}")
     choice = col_tech.selectbox(
-        "Prompt Technique", TECHNIQUES,
+        t("main.prompts.technique_label"), TECHNIQUES,
         index=TECHNIQUES.index(p["technique"]) if p["technique"] in TECHNIQUES else len(TECHNIQUES) - 1,
         key=f"tech_{p['id']}",
     )
-    p["technique"] = col_tech.text_input("eigene Bezeichnung", value="", key=f"own_{p['id']}") if choice == "Andere…" else choice
+    p["technique"] = (
+        col_tech.text_input(t("main.prompts.custom_label"), value="", key=f"own_{p['id']}")
+        if choice == other_technique else choice
+    )
     col_del.write("")
     col_del.write("")
     if col_del.button("✕", key=f"del_{p['id']}"):
@@ -632,7 +650,7 @@ if to_delete is not None:
     st.session_state.prompts.pop(to_delete)
     st.rerun()
 
-if st.button("+ Prompt hinzufügen"):
+if st.button(t("main.prompts.add_button")):
     st.session_state.prompts.append(
         {"id": f"p{len(st.session_state.prompts) + 1}", "text": "", "technique": "Zero-Shot Prompting"}
     )
@@ -640,26 +658,26 @@ if st.button("+ Prompt hinzufügen"):
 
 st.divider()
 prompts = [p for p in st.session_state.prompts if p["text"].strip()]
-st.write(f"**{len(selected)}** Modelle × **{len(prompts)}** Prompts = **{len(selected) * len(prompts)}** API-Calls")
+st.write(t("main.summary", models=len(selected), prompts=len(prompts), calls=len(selected) * len(prompts)))
 
 if not nvidia_key:
-    st.warning("NVIDIA Build API-Key fehlt (Sidebar).")
+    st.warning(t("main.warning_no_key"))
 if use_rag and not rag_ready:
-    st.warning("RAG ist aktiv, aber es ist noch kein Dokument indexiert — der Lauf geht ohne Kontext.")
+    st.warning(t("main.warning_rag_not_ready"))
 
 # ---------------- Parameter (für alle Modelle gleich) ----------------
-st.subheader("Parameter")
+st.subheader(t("main.parameters.header"))
 col_temp, col_top_p, col_max_tokens = st.columns(3)
 temperature = col_temp.number_input("temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.1)
 top_p = col_top_p.number_input("top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
 max_tokens = col_max_tokens.number_input("max_tokens", min_value=1, max_value=8192, value=1024, step=1)
 
 system_prompt = st.text_area(
-    "System-Prompt (optional)", value="", placeholder="z.B. Antworte knapp und auf Deutsch.",
+    t("main.parameters.system_prompt_label"), value="", placeholder=t("main.parameters.system_prompt_placeholder"),
 )
 
 col_seed_on, col_seed_val = st.columns([1, 2])
-use_seed = col_seed_on.checkbox("Seed fixieren", value=False)
+use_seed = col_seed_on.checkbox(t("main.parameters.seed_checkbox"), value=False)
 seed = col_seed_val.number_input(
     "seed", min_value=0, max_value=2_147_483_647, value=42, step=1, disabled=not use_seed,
 )
@@ -820,10 +838,10 @@ def _build_result_row(
 run_active = st.session_state.run is not None
 col_start, col_stop = st.columns([4, 1])
 start_clicked = col_start.button(
-    "▶ Benchmark starten", type="primary",
+    t("main.run.start_button"), type="primary",
     disabled=run_active or not (selected and prompts and nvidia_key),
 )
-stop_clicked = col_stop.button("■ Stop", disabled=not run_active)
+stop_clicked = col_stop.button(t("main.run.stop_button"), disabled=not run_active)
 
 if st.session_state.last_run_message:
     level, text = st.session_state.last_run_message
@@ -842,7 +860,7 @@ if start_clicked and not run_active:
     # redundant selbst embedden (gleicher Prompt, unabhängig vom Modell dieselben Chunks).
     retrieval_by_prompt = {}
     if rag_ready:
-        with st.spinner("RAG-Kontext wird abgerufen ..."):
+        with st.spinner(t("main.run.rag_spinner")):
             for p in prompts:
                 try:
                     retrieval_by_prompt[p["id"]] = index.retrieve(p["text"], top_k)
@@ -900,22 +918,27 @@ if st.session_state.run is not None:
         store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
         run["done_count"] += 1
 
-    st.progress(run["done_count"] / run["total"], text=f"{run['done_count']}/{run['total']} abgeschlossen")
-    STATUS_LABELS = {"ok": "fertig", "fehler": "Fehler", "timeout": "Timeout", "abgebrochen": "abgebrochen"}
+    st.progress(
+        run["done_count"] / run["total"],
+        text=t("main.run.progress", done=run["done_count"], total=run["total"]),
+    )
     lines = []
     with run["progress_lock"]:
         for model_id, prompt in run["futures"].values():
             info = run["task_progress"].get((model_id, prompt["id"]))
             if info is None:
-                lines.append(f"- {model_id} · {prompt['id']}: wartet auf freien Slot ...")
+                lines.append(t("main.run.status.waiting_for_slot", model=model_id, prompt=prompt["id"]))
             elif info["done"]:
-                label = STATUS_LABELS.get(info.get("status", "ok"), "fertig")
+                label = t(f"main.run.status_label.{info.get('status', 'ok')}")
                 detail = f" - {info['detail']}" if info.get("status") not in (None, "ok") and info.get("detail") else ""
-                lines.append(f"- {model_id} · {prompt['id']}: {label} ({info['elapsed']:.1f} s){detail}")
+                lines.append(t(
+                    "main.run.status.done", model=model_id, prompt=prompt["id"],
+                    label=label, elapsed=info["elapsed"], detail=detail,
+                ))
             elif not info["first_token"]:
-                lines.append(f"- {model_id} · {prompt['id']}: in der NVIDIA-Warteschlange - wartet seit {info['elapsed']:.0f} s")
+                lines.append(t("main.run.status.queue", model=model_id, prompt=prompt["id"], elapsed=info["elapsed"]))
             else:
-                lines.append(f"- {model_id} · {prompt['id']}: generiert ... ({info['elapsed']:.0f} s)")
+                lines.append(t("main.run.status.generating", model=model_id, prompt=prompt["id"], elapsed=info["elapsed"]))
     st.markdown("\n".join(lines))
 
     if not run["pending"]:
@@ -927,10 +950,12 @@ if st.session_state.run is not None:
                 flush=True,
             )
             st.session_state.last_run_message = (
-                "warning", f"Lauf abgebrochen – {run['done_count']} von {run['total']} Calls fertig.",
+                "warning", t("main.run.message.cancelled", done=run["done_count"], total=run["total"]),
             )
         else:
-            st.session_state.last_run_message = ("success", f"Fertig - {run['done_count']}/{run['total']} Calls.")
+            st.session_state.last_run_message = (
+                "success", t("main.run.message.done", done=run["done_count"], total=run["total"]),
+            )
         st.session_state.run = None
         st.rerun()  # Start/Stop-Button-Zustand sofort neu zeichnen, nicht erst beim nächsten Klick
     else:
@@ -957,40 +982,41 @@ def _render_result_card(row: dict) -> str:
     # auch die nächste(n) Karte(n) mit in den Codeblock (Live-Test-Bug, siehe PROTOKOLL.md).
     color = model_color(row["model_id"])
     sp = row.get("sent_params") or {}
+    seed_display = sp.get("seed") if sp.get("seed") is not None else t("main.card.param_not_set")
     params_line = (
         f"temperature={sp.get('temperature')}, top_p={sp.get('top_p')}, max_tokens={sp.get('max_tokens')}, "
-        f"seed={sp.get('seed') if sp.get('seed') is not None else 'nicht gesetzt'}"
+        f"seed={seed_display}"
     )
     if sp.get("dropped_param"):
-        params_line += f" (ohne '{sp['dropped_param']}', von NVIDIA Build abgelehnt)"
+        params_line += t("main.card.param_dropped_suffix", param=sp["dropped_param"])
     metrics = (
-        f"TTFT {_fmt(row.get('ttft_s'), ' s')} · Gen. {_fmt(row.get('generation_s'), ' s')} · "
+        f"TTFT {_fmt(row.get('ttft_s'), ' s')} · {t('main.card.metric_gen')} {_fmt(row.get('generation_s'), ' s')} · "
         f"Tokens {_fmt_tokens(row.get('tokens_in'))}/{_fmt_tokens(row.get('tokens_out'))}"
-        + (f" (davon {row['reasoning_tokens']} Reasoning)" if row.get("reasoning_tokens") else "")
-        + f" · {_fmt(row.get('tokens_per_s'), ' Tok/s', 1)} · {_fmt_cost(row.get('cost_usd'))}"
+        + (t("main.card.metric_reasoning_tokens", count=row["reasoning_tokens"]) if row.get("reasoning_tokens") else "")
+        + f" · {_fmt(row.get('tokens_per_s'), ' ' + t('main.card.metric_tokps'), 1)} · {_fmt_cost(row.get('cost_usd'))}"
     )
     pill = "display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;margin:0 0 6px;"
     status_html = (
         "" if row["ok"]
-        else f"<span style='{pill}background:#3A1F22;color:#E85D75;'>Fehler</span><br>"
+        else f"<span style='{pill}background:#3A1F22;color:#E85D75;'>{t('main.card.error_badge')}</span><br>"
     )
     if row.get("is_best"):
-        status_html += f"<span style='{pill}background:#2A2314;color:#F2B34A;font-weight:600;'>★ Beste Antwort</span><br>"
+        status_html += f"<span style='{pill}background:#2A2314;color:#F2B34A;font-weight:600;'>{t('main.card.best_badge')}</span><br>"
     if row.get("stars"):
         status_html += f"<div style='color:#F2B34A;margin-bottom:6px;'>{'★' * row['stars']}{'☆' * (5 - row['stars'])}</div>"
     reasoning_html = ""
     if row.get("reasoning"):
         reasoning_html = (
-            "<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>Reasoning</summary>"
+            f"<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>{t('common.reasoning')}</summary>"
             f"<div style='white-space:pre-wrap;margin-top:6px;font-size:13px;'>{html.escape(row['reasoning'])}</div>"
             "</details>"
         )
     rag_html = ""
     if row.get("injected_context"):
         sources_list = "".join(f"<li>{html.escape(s)}</li>" for s in row.get("retrieved_sources", []))
+        rag_summary = t("main.card.rag_summary", count=len(row.get("retrieved_sources", [])))
         rag_html = (
-            "<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>"
-            f"RAG-Kontext ({len(row.get('retrieved_sources', []))} Chunks)</summary>"
+            f"<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>{rag_summary}</summary>"
             f"<ul style='margin:6px 0 0; padding-left:18px; font-size:12px;'>{sources_list}</ul></details>"
         )
     return (
@@ -1013,16 +1039,13 @@ def _render_result_card(row: dict) -> str:
 
 # ---------------- Ergebnisse ----------------
 if st.session_state.results:
-    st.subheader("Ergebnisse")
+    st.subheader(t("main.results.header"))
 
     dropped_by_model = {
         r["model_id"] for r in st.session_state.results if r["sent_params"].get("dropped_param")
     }
     if dropped_by_model:
-        st.caption(
-            "Bei manchen Modellen wurde nach einem 400-Fehler ein Parameter entfernt und ohne ihn "
-            f"wiederholt - betroffen: {', '.join(sorted(dropped_by_model))}. Details pro Karte/Export."
-        )
+        st.caption(t("main.results.dropped_param_caption", models=", ".join(sorted(dropped_by_model))))
 
     by_prompt: dict = {}
     for r in st.session_state.results:
@@ -1044,13 +1067,14 @@ if st.session_state.results:
 
         model_ids_here = [r["model_id"] for r in rows_for_prompt]
         current_best_model = next((r["model_id"] for r in rows_for_prompt if r.get("is_best")), None)
-        best_options = ["Keine"] + model_ids_here
+        none_option = t("main.results.best_answer_none")
+        best_options = [none_option] + model_ids_here
         best_choice = st.radio(
-            "Beste Antwort", best_options,
+            t("main.results.best_answer_label"), best_options,
             index=best_options.index(current_best_model) if current_best_model in best_options else 0,
             horizontal=True, key=f"best_{run_id_for_rating}_{prompt_id}",
         )
-        winner = best_choice if best_choice != "Keine" else None
+        winner = best_choice if best_choice != none_option else None
         if winner != current_best_model:
             for r in rows_for_prompt:
                 r["is_best"] = (r["model_id"] == winner)
@@ -1072,15 +1096,11 @@ if st.session_state.results:
     known_cost = df["cost_usd"].dropna()
     unknown_cost_count = int(df["cost_usd"].isna().sum())
     cost_note = (
-        f" (zzgl. {unknown_cost_count} Antwort/en mit unbekanntem Preis, nicht eingerechnet)"
-        if unknown_cost_count else ""
+        t("main.results.cost_unknown_note", count=unknown_cost_count) if unknown_cost_count else ""
     )
-    st.caption(
-        f"Geschätzte Gesamtkosten dieses Laufs: ${known_cost.sum():.6f} "
-        f"(deine Preise aus der Modell-Liste oben){cost_note}"
-    )
+    st.caption(t("main.results.cost_caption", cost=f"{known_cost.sum():.6f}", note=cost_note))
 
-    with st.expander("Alle Ergebnisse als Tabelle"):
+    with st.expander(t("main.results.table_expander")):
         table_cols = ["model_id", "prompt_id", "technique", "ok",
                       "ttft_s", "generation_s", "latency_s", "tokens_in", "tokens_out",
                       "tokens_per_s", "reasoning_tokens", "cost_usd", "response"]
@@ -1113,28 +1133,23 @@ if st.session_state.results:
 
 # ---------------- Timeline ----------------
 st.divider()
-st.subheader("Timeline")
+st.subheader(t("main.timeline.header"))
 known = store.known_models()
 if not known:
-    st.caption("Noch keine gespeicherten Läufe — nach dem ersten Benchmark erscheint hier der Verlauf.")
+    st.caption(t("main.timeline.no_runs_caption"))
 else:
-    chosen = st.multiselect("Modelle", known, default=known[:3])
+    chosen = st.multiselect(t("main.timeline.models_label"), known, default=known[:3])
     TIMELINE_METRICS = ["generation_s", "tokens_per_s", "ttft_s", "latency_s", "tokens_out", "tokens_in", "cost_usd"]
     metric = st.selectbox(
-        "Metrik", TIMELINE_METRICS,
-        format_func=lambda m: {
-            "generation_s": "Generierungszeit (s, ohne Warteschlange)", "tokens_per_s": "Tokens/Sekunde",
-            "ttft_s": "TTFT (s, inkl. Warteschlange)", "latency_s": "Gesamtlatenz (s, inkl. Warteschlange)",
-            "tokens_out": "Output-Tokens", "tokens_in": "Input-Tokens", "cost_usd": "Kosten (USD)",
-        }[m],
-        help="Generierungszeit/Tokens pro Sekunde spiegeln die Modell-Leistung - die Gesamtlatenz "
-             "misst bei NVIDIA Build (Freikontingent) vor allem die Warteschlange.",
+        t("main.timeline.metric_label"), TIMELINE_METRICS,
+        format_func=lambda m: t(f"main.timeline.metric.{m}"),
+        help=t("main.timeline.metric_help"),
     )
     if chosen:
         hist = store.load_for_models(chosen)
         hist = hist.dropna(subset=[metric])
         if hist.empty:
-            st.caption("Für diese Metrik liegen bei den gewählten Modellen noch keine Werte vor.")
+            st.caption(t("main.timeline.no_values_caption"))
         else:
             chart = (
                 hist.groupby([hist["timestamp"].dt.floor("min"), "model_id"])[metric].mean()
@@ -1152,14 +1167,11 @@ else:
                 .properties(height=320),
                 use_container_width=True,
             )
-            st.caption(
-                f"{store.run_count()} Lauf/Läufe gespeichert. Voraussetzung: Der Anbieter hält die Modell-ID stabil — "
-                "bei einer Umbenennung reißt die Zeitreihe ab."
-            )
+            st.caption(t("main.timeline.footer_caption", count=store.run_count()))
 
-    st.markdown("**Siege pro Modell**")
+    st.markdown(t("main.timeline.wins_header"))
     wins = store.wins_per_model()
     if wins.empty:
-        st.caption("Noch keine 'Beste Antwort' markiert.")
+        st.caption(t("main.timeline.no_wins_caption"))
     else:
         st.bar_chart(wins.set_index("model_id")["wins"])

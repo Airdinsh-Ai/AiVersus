@@ -40,6 +40,25 @@ class StreamCancelled(Exception):
     """Der Call wurde über cancel_event von außen abgebrochen (Stop-Button)."""
 
 
+class NoFirstTokenTimeout(TimeoutError):
+    """Kein erstes Token innerhalb first_token_timeout_s - strukturiert statt freiem Text,
+
+    damit die UI (app.py) die Meldung selbst übersetzen kann (EN/DE, siehe i18n.py).
+    """
+
+    def __init__(self, elapsed_s: float):
+        self.elapsed_s = elapsed_s
+        super().__init__(f"no first token after {elapsed_s:.0f}s")
+
+
+class NoFurtherTokenTimeout(TimeoutError):
+    """Kein weiteres Token innerhalb inter_token_timeout_s - strukturiert statt freiem Text."""
+
+    def __init__(self, elapsed_s: float):
+        self.elapsed_s = elapsed_s
+        super().__init__(f"no further token for {elapsed_s:.0f}s")
+
+
 @dataclass
 class ChatCallResult:
     ok: bool
@@ -135,9 +154,9 @@ def _call_once(
 
         if elapsed_since_token >= limit:
             if first_token_at is None:
-                error = TimeoutError(f"Kein erstes Token nach {elapsed_since_token:.0f} s (Warteschlange?).")
+                error = NoFirstTokenTimeout(elapsed_since_token)
             else:
-                error = TimeoutError(f"Kein weiteres Token seit {elapsed_since_token:.0f} s.")
+                error = NoFurtherTokenTimeout(elapsed_since_token)
             break
 
         wait = max(0.2, min(1.0, limit - elapsed_since_token))
