@@ -16,7 +16,9 @@ API-Key wird in der Sidebar eingegeben, nur im Session-State gehalten und nirgen
 gespeichert (kein .env-Fallback, kein Logging, nicht in runs.db, nicht in Exporten).
 """
 
+import concurrent.futures
 import json
+import threading
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -44,7 +46,8 @@ st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
 store = RunStore()
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-REQUEST_TIMEOUT_S = 60.0  # ein hängender Call darf den Lauf/die Session nicht blockieren
+CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierungs-Warteschlange
+MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
 
 if "prompts" not in st.session_state:
@@ -97,12 +100,22 @@ def describe_api_error(e: Exception) -> str:
     if isinstance(e, APIStatusError):
         return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code})."
     if isinstance(e, APITimeoutError):
-        return f"Zeitüberschreitung ({REQUEST_TIMEOUT_S:.0f} s) - keine Antwort von NVIDIA Build erhalten."
+        return "Zeitüberschreitung auf Transport-Ebene - keine Antwort von NVIDIA Build erhalten."
     if isinstance(e, APIConnectionError):
         return "Verbindung zu NVIDIA Build fehlgeschlagen (Netzwerk)."
     if isinstance(e, APIError):
         return "Verbindung zu NVIDIA Build fehlgeschlagen."
     return "Unbekannter Fehler beim API-Aufruf."
+
+
+def _is_definitively_unavailable(e: Exception) -> bool:
+    """404/410 sind eine definitive Absage (Modell existiert/ist für den Account nicht
+
+    verfügbar) - ein Timeout dagegen heißt nur "langsam/unbekannt", nicht "nicht verfügbar".
+    """
+    if isinstance(e, NotFoundError):
+        return True
+    return isinstance(e, APIStatusError) and e.status_code == 410
 
 
 @st.cache_resource
@@ -112,7 +125,7 @@ def get_index(api_key: str) -> RagIndex:
 
 @st.cache_data(ttl=300, show_spinner="Modellkatalog wird geladen ...")
 def _load_chat_models(api_key: str) -> list:
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=REQUEST_TIMEOUT_S, max_retries=0)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=CATALOG_TIMEOUT_S, max_retries=0)
     return fetch_chat_models(client)
 
 
@@ -126,12 +139,24 @@ nvidia_key = st.sidebar.text_input(
     help="Nur für diese Sitzung im Speicher - wird nicht geloggt, nicht gespeichert, nicht exportiert.",
 )
 
+# ---------------- Sidebar: Timeouts ----------------
+st.sidebar.divider()
+st.sidebar.subheader("Timeouts")
+st.sidebar.caption("NVIDIA Build (Freikontingent) kann vor dem ersten Token mehrere Minuten Warteschlange haben.")
+first_token_timeout_s = st.sidebar.number_input(
+    "Warten auf erstes Token (s)", min_value=10, max_value=600, value=300, step=10,
+)
+inter_token_timeout_s = st.sidebar.number_input(
+    "Danach: kein weiteres Token (s)", min_value=5, max_value=300, value=60, step=5,
+)
+chat_client_timeout_s = first_token_timeout_s + 30  # Transport-Timeout muss größer sein als unser eigenes
+
 # ---------------- Sidebar: Verbindungstest ----------------
 st.sidebar.divider()
 st.sidebar.subheader("Verbindungstest")
 st.sidebar.caption("Lädt zuerst den Modellkatalog (prüft den Key), dann ein kurzer Testaufruf an ein kleines Modell daraus.")
 if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S, max_retries=0)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=chat_client_timeout_s, max_retries=0)
     try:
         chat_models = fetch_chat_models(client)  # ungecacht - der Test soll den Key gerade neu prüfen
     except Exception as e:
@@ -159,8 +184,11 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
             text_box = st.sidebar.empty()
             tried, result, test_model = [], None, None
 
-            def _on_progress(elapsed_s: float, partial_text: str) -> None:
-                status_box.caption(f"wartet seit {elapsed_s:.0f} s ...")
+            def _on_progress(elapsed_s: float, partial_text: str, got_first_token: bool) -> None:
+                if not got_first_token:
+                    status_box.caption(f"in der NVIDIA-Warteschlange - wartet seit {elapsed_s:.0f} s ...")
+                else:
+                    status_box.caption(f"generiert ... ({elapsed_s:.0f} s)")
                 if partial_text:
                     text_box.markdown(f"*(läuft)* {partial_text}")
 
@@ -172,6 +200,8 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
                     client, candidate,
                     [{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
                     on_progress=_on_progress,
+                    first_token_timeout_s=first_token_timeout_s,
+                    inter_token_timeout_s=inter_token_timeout_s,
                     temperature=sent_params["temperature"],
                     max_tokens=sent_params["max_tokens"],
                 )
@@ -183,9 +213,9 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
                 if not result.ok:
                     log_error_detail(f"Verbindungstest {candidate}", result.error)
                 test_model = candidate
-                if result.ok or not isinstance(result.error, NotFoundError):
+                if result.ok or not _is_definitively_unavailable(result.error):
                     break  # Erfolg, oder ein Fehler, der auch bei anderen Modellen käme (z.B. 401)
-                st.sidebar.caption(f"{candidate}: für diesen Account nicht verfügbar (404) - nächstes Modell ...")
+                st.sidebar.caption(f"{candidate}: für diesen Account nicht verfügbar - nächstes Modell ...")
 
             status_box.empty()
             text_box.empty()
@@ -197,8 +227,13 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
                 st.sidebar.write("**Gesendete Parameter:**", {"model": test_model, **sent_params})
                 st.sidebar.write(
                     "**usage (roh von NVIDIA Build):**",
-                    {"prompt_tokens": result.tokens_in, "completion_tokens": result.tokens_out},
+                    {
+                        "prompt_tokens": result.tokens_in,
+                        "completion_tokens": result.tokens_out,
+                        "reasoning_tokens": result.reasoning_tokens,
+                    },
                 )
+                st.sidebar.write("**TTFT / Generierungszeit:**", f"{result.ttft_s} s / {result.generation_s} s")
                 st.sidebar.write("**finish_reason:**", result.finish_reason)
                 if result.reasoning:
                     with st.sidebar.expander("Reasoning"):
@@ -274,78 +309,132 @@ if not nvidia_key:
 if use_rag and not rag_ready:
     st.warning("RAG ist aktiv, aber es ist noch kein Dokument indexiert — der Lauf geht ohne Kontext.")
 
+def _run_one_task(client, model_id, prompt, task_progress, progress_lock):
+    """Läuft in einem Worker-Thread - rührt nie st.session_state oder st.* an, nur den
+
+    geteilten task_progress-Dict (für die Live-Anzeige im Hauptthread).
+    """
+    key = (model_id, prompt["id"])
+    call_start = time.perf_counter()
+
+    def _on_progress(elapsed_s: float, partial_text: str, got_first_token: bool) -> None:
+        with progress_lock:
+            task_progress[key] = {"elapsed": elapsed_s, "first_token": got_first_token, "done": False}
+
+    print(f"[{datetime.now(timezone.utc).isoformat()}] START {model_id} prompt={prompt['id']}", flush=True)
+    try:
+        result = call_chat_streaming(
+            client, model_id,
+            [{"role": "user", "content": build_prompt(prompt["text"], [])}],
+            on_progress=_on_progress,
+            first_token_timeout_s=first_token_timeout_s,
+            inter_token_timeout_s=inter_token_timeout_s,
+        )
+        exc = None
+    except Exception as e:  # unerwarteter Fehler außerhalb des API-Aufrufs selbst
+        result, exc = None, e
+    with progress_lock:
+        task_progress[key] = {
+            "elapsed": result.duration_s if result else round(time.perf_counter() - call_start, 3),
+            "first_token": True, "done": True,
+        }
+    return model_id, prompt, result, exc, call_start
+
+
+def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, call_start: float) -> dict:
+    row = {
+        "run_id": run_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model_id": model_id,
+        "prompt_id": prompt["id"],
+        "technique": prompt["technique"],
+        "injected_context": False,
+        "retrieved_sources": [],
+    }
+    if exc is not None:
+        duration = round(time.perf_counter() - call_start, 3)
+        log_error_detail(f"Benchmark {model_id}/{prompt['id']}", exc)
+        row.update(ok=False, response=describe_api_error(exc), reasoning="",
+                   tokens_in=None, tokens_out=None, reasoning_tokens=None, ttft_s=None, generation_s=None)
+    elif result.ok:
+        duration = result.duration_s
+        row.update(
+            ok=True, response=result.content, reasoning=result.reasoning,
+            tokens_in=result.tokens_in, tokens_out=result.tokens_out, reasoning_tokens=result.reasoning_tokens,
+            ttft_s=result.ttft_s, generation_s=result.generation_s,
+        )
+    else:
+        duration = result.duration_s
+        log_error_detail(f"Benchmark {model_id}/{prompt['id']}", result.error)
+        if _is_definitively_unavailable(result.error):
+            st.session_state.unavailable_models.add(model_id)
+            response_text = "Im Katalog, aber für diesen Account nicht verfügbar."
+        else:
+            response_text = describe_api_error(result.error)
+        row.update(ok=False, response=response_text, reasoning="", tokens_in=None, tokens_out=None,
+                   reasoning_tokens=None, ttft_s=result.ttft_s, generation_s=result.generation_s)
+
+    status = "OK" if row["ok"] else f"FEHLER: {row['response']}"
+    print(
+        f"[{datetime.now(timezone.utc).isoformat()}] ENDE {model_id} prompt={prompt['id']} "
+        f"dauer={duration}s status={status}",
+        flush=True,
+    )
+    row["latency_s"] = duration
+    row["tokens_per_s"] = (
+        round(row["tokens_out"] / row["generation_s"], 1)
+        if row.get("tokens_out") and row.get("generation_s") else None
+    )
+    row["cost_usd"] = estimate_cost_usd(model_id, row["tokens_in"], row["tokens_out"])
+    return row
+
+
 # ---------------- Ausführung ----------------
 if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and prompts and nvidia_key)):
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S, max_retries=0)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=chat_client_timeout_s, max_retries=0)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tasks = [(m, p) for m in selected for p in prompts]
     st.session_state.results = []
     progress = st.progress(0.0)
-    status_box = st.empty()
-    text_box = st.empty()
+    status_area = st.empty()
 
-    for n, (model_id, prompt) in enumerate(tasks):
-        progress.progress(n / len(tasks), text=f"{n + 1}/{len(tasks)} · {model_id} · {prompt['id']}")
-        row = {
-            "run_id": run_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "model_id": model_id,
-            "prompt_id": prompt["id"],
-            "technique": prompt["technique"],
-            "injected_context": rag_ready,
-            "retrieved_sources": [],
+    task_progress: dict = {}
+    progress_lock = threading.Lock()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_CONCURRENT_CALLS, len(tasks))) as executor:
+        future_to_task = {
+            executor.submit(_run_one_task, client, model_id, prompt, task_progress, progress_lock): (model_id, prompt)
+            for model_id, prompt in tasks
         }
-
-        def _on_progress(elapsed_s: float, partial_text: str, _model=model_id, _pid=prompt["id"]) -> None:
-            status_box.caption(f"{_model} · {_pid} - wartet seit {elapsed_s:.0f} s ...")
-            if partial_text:
-                text_box.markdown(partial_text)
-
-        call_start = time.perf_counter()
-        print(f"[{datetime.now(timezone.utc).isoformat()}] START {model_id} prompt={prompt['id']}", flush=True)
-        try:
-            retrieved = index.retrieve(prompt["text"], 4) if rag_ready else []
-            row["retrieved_sources"] = [f"{c.source}#{c.chunk_index}" for c in retrieved]
-            result = call_chat_streaming(
-                client, model_id,
-                [{"role": "user", "content": build_prompt(prompt["text"], retrieved)}],
-                on_progress=_on_progress,
+        pending = set(future_to_task)
+        done_count = 0
+        while pending:
+            done_now, pending = concurrent.futures.wait(
+                pending, timeout=0.5, return_when=concurrent.futures.FIRST_COMPLETED
             )
-            duration = result.duration_s
-            if result.ok:
-                row.update(
-                    ok=True, response=result.content, reasoning=result.reasoning,
-                    tokens_in=result.tokens_in, tokens_out=result.tokens_out,
-                )
-                status = "OK"
-            else:
-                log_error_detail(f"Benchmark {model_id}/{prompt['id']}", result.error)
-                if isinstance(result.error, NotFoundError):
-                    st.session_state.unavailable_models.add(model_id)
-                    response_text = "Im Katalog, aber für diesen Account nicht verfügbar (404)."
-                else:
-                    response_text = describe_api_error(result.error)
-                row.update(ok=False, response=response_text, reasoning="", tokens_in=None, tokens_out=None)
-                status = f"FEHLER: {row['response']}"
-        except Exception as e:  # unerwarteter Fehler (z.B. RAG-Retrieval): Zeile bleibt sichtbar, Lauf läuft weiter
-            duration = round(time.perf_counter() - call_start, 3)
-            log_error_detail(f"Benchmark {model_id}/{prompt['id']}", e)
-            row.update(ok=False, response=describe_api_error(e), reasoning="", tokens_in=None, tokens_out=None)
-            status = f"FEHLER: {row['response']}"
+            for future in done_now:
+                model_id, prompt, result, exc, call_start = future.result()
+                row = _build_result_row(run_id, model_id, prompt, result, exc, call_start)
+                st.session_state.results.append(row)
+                store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
+                done_count += 1
 
-        print(
-            f"[{datetime.now(timezone.utc).isoformat()}] ENDE {model_id} prompt={prompt['id']} "
-            f"dauer={duration}s status={status}",
-            flush=True,
-        )
-        row["latency_s"] = duration
-        row["cost_usd"] = estimate_cost_usd(model_id, row["tokens_in"], row["tokens_out"])
+            lines = []
+            with progress_lock:
+                for model_id, prompt in tasks:
+                    info = task_progress.get((model_id, prompt["id"]))
+                    if info is None:
+                        lines.append(f"- {model_id} · {prompt['id']}: wartet auf freien Slot ...")
+                    elif info["done"]:
+                        lines.append(f"- {model_id} · {prompt['id']}: fertig ({info['elapsed']:.1f} s)")
+                    elif not info["first_token"]:
+                        lines.append(f"- {model_id} · {prompt['id']}: in der NVIDIA-Warteschlange - wartet seit {info['elapsed']:.0f} s")
+                    else:
+                        lines.append(f"- {model_id} · {prompt['id']}: generiert ... ({info['elapsed']:.0f} s)")
+            status_area.markdown("\n".join(lines))
+            progress.progress(done_count / len(tasks), text=f"{done_count}/{len(tasks)} abgeschlossen")
 
-        st.session_state.results.append(row)
-        store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
-
-    status_box.empty()
-    text_box.empty()
+    status_area.empty()
     progress.progress(1.0, text="Fertig")
 
 # ---------------- Ergebnisse ----------------
@@ -353,8 +442,9 @@ if st.session_state.results:
     st.subheader("Ergebnisse")
     df = pd.DataFrame(st.session_state.results)
     st.dataframe(
-        df[["model_id", "prompt_id", "technique", "ok", "injected_context",
-            "latency_s", "tokens_in", "tokens_out", "cost_usd", "response"]],
+        df[["model_id", "prompt_id", "technique", "ok",
+            "ttft_s", "generation_s", "latency_s", "tokens_in", "tokens_out",
+            "tokens_per_s", "reasoning_tokens", "cost_usd", "response"]],
         use_container_width=True,
     )
     st.caption(f"Geschätzte Gesamtkosten dieses Laufs: ${df['cost_usd'].sum():.6f} (Preise: pricing.py, Richtwerte)")

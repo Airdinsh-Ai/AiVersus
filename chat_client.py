@@ -7,9 +7,15 @@
 
 """
 Chat-Aufruf über stream=True in einem Hintergrund-Thread: Der Hauptthread bleibt
-frei, um die Wartezeit live anzuzeigen (on_progress-Callback), und kann abbrechen,
-wenn zu lange kein neues Token kommt - statt auf die volle Gesamt-Zeitüberschreitung
-des Clients zu warten (das Verhalten, das zum hängenden Benchmark-Lauf führte).
+frei, um die Wartezeit live anzuzeigen (on_progress-Callback).
+
+Zwei getrennte Zeitüberschreitungen, weil NVIDIA Build (Freikontingent) vor dem
+ersten Token mehrere Minuten Warteschlange haben kann, danach aber normal streamt:
+- first_token_timeout_s: Geduld bis zum ersten Token (Warteschlange inklusive).
+- inter_token_timeout_s: Geduld zwischen zwei Token, sobald das Streaming läuft.
+Reasoning-Modelle (z.B. gpt-oss) schicken ihr "Denken" oft als eigenes Feld
+(delta.reasoning_content/delta.reasoning), nicht als delta.content - das zählt
+hier ebenfalls als Lebenszeichen und wird separat in `reasoning` gesammelt.
 """
 
 import queue
@@ -26,30 +32,28 @@ class ChatCallResult:
     reasoning: str
     tokens_in: Optional[int]
     tokens_out: Optional[int]
+    reasoning_tokens: Optional[int]
     finish_reason: Optional[str]
     error: Optional[Exception]
     duration_s: float
+    ttft_s: Optional[float]  # Time To First Token - enthält die NVIDIA-Warteschlange
+    generation_s: Optional[float]  # duration_s - ttft_s, für eine unverzerrte Tokens/s-Rechnung
 
 
 def call_chat_streaming(
     client,
     model_id: str,
     messages: list,
-    on_progress: Optional[Callable[[float, str], None]] = None,
-    max_wait_without_token_s: float = 45.0,
-    max_total_s: float = 180.0,
+    on_progress: Optional[Callable[[float, str, bool], None]] = None,
+    first_token_timeout_s: float = 300.0,
+    inter_token_timeout_s: float = 60.0,
     **params,
 ) -> ChatCallResult:
     """Streamt eine Chat-Antwort in einem Hintergrund-Thread.
 
-    `on_progress(elapsed_s, partial_text)` wird regelmäßig im Hauptthread aufgerufen,
-    solange der Call läuft - für eine Live-Anzeige ("wartet seit X s"). Bricht ab,
-    wenn `max_wait_without_token_s` lang kein neues Chunk kommt oder nach `max_total_s`
-    insgesamt, statt stillschweigend bis zum vollen Client-Timeout zu hängen.
-
-    Reasoning-Modelle (z.B. gpt-oss) schicken ihr "Denken" oft als eigenes Feld
-    (delta.reasoning_content/delta.reasoning), nicht als delta.content - das zählt
-    hier ebenfalls als Lebenszeichen und wird separat in `reasoning` gesammelt.
+    `on_progress(elapsed_s, partial_text, got_first_token)` wird regelmäßig im
+    Hauptthread aufgerufen, solange der Call läuft - für eine Live-Anzeige
+    ("in der Warteschlange" vor dem ersten Token, danach "wartet seit X s").
     """
     q: "queue.Queue" = queue.Queue()
 
@@ -72,27 +76,31 @@ def call_chat_streaming(
     reasoning_parts: list = []
     usage = None
     finish_reason = None
+    first_token_at: Optional[float] = None
     last_token_at = start
     error: Optional[Exception] = None
 
     while True:
         now = time.perf_counter()
         elapsed_total = now - start
-        elapsed_since_token = now - last_token_at
+        if first_token_at is None:
+            elapsed_since_token, limit = elapsed_total, first_token_timeout_s
+        else:
+            elapsed_since_token, limit = now - last_token_at, inter_token_timeout_s
 
-        if elapsed_total >= max_total_s:
-            error = TimeoutError(f"Gesamt-Zeitüberschreitung nach {elapsed_total:.0f} s.")
-            break
-        if elapsed_since_token >= max_wait_without_token_s:
-            error = TimeoutError(f"Kein Token seit {elapsed_since_token:.0f} s.")
+        if elapsed_since_token >= limit:
+            if first_token_at is None:
+                error = TimeoutError(f"Kein erstes Token nach {elapsed_since_token:.0f} s (Warteschlange?).")
+            else:
+                error = TimeoutError(f"Kein weiteres Token seit {elapsed_since_token:.0f} s.")
             break
 
-        wait = max(0.2, min(1.0, max_wait_without_token_s - elapsed_since_token))
+        wait = max(0.2, min(1.0, limit - elapsed_since_token))
         try:
             kind, payload = q.get(timeout=wait)
         except queue.Empty:
             if on_progress:
-                on_progress(elapsed_total, "".join(content_parts))
+                on_progress(elapsed_total, "".join(content_parts), first_token_at is not None)
             continue
 
         if kind == "error":
@@ -115,22 +123,36 @@ def call_chat_streaming(
         if reasoning_piece:
             reasoning_parts.append(reasoning_piece)
         if content_piece or reasoning_piece:
-            last_token_at = time.perf_counter()  # Lebenszeichen - auch reines Reasoning zählt
+            token_at = time.perf_counter()
+            if first_token_at is None:
+                first_token_at = token_at
+            last_token_at = token_at
         if choice is not None and choice.finish_reason:
             finish_reason = choice.finish_reason
         if getattr(payload, "usage", None):
             usage = payload.usage
         if on_progress:
-            on_progress(now - start, "".join(content_parts))
+            on_progress(now - start, "".join(content_parts), first_token_at is not None)
 
     duration_s = round(time.perf_counter() - start, 3)
+    ttft_s = round(first_token_at - start, 3) if first_token_at is not None else None
+    generation_s = round(duration_s - ttft_s, 3) if ttft_s is not None else None
     content = "".join(content_parts)
     reasoning = "".join(reasoning_parts)
+
+    reasoning_tokens = None
+    tokens_in = tokens_out = None
+    if usage is not None:
+        tokens_in, tokens_out = usage.prompt_tokens, usage.completion_tokens
+        details = getattr(usage, "completion_tokens_details", None)
+        if details is not None:
+            reasoning_tokens = getattr(details, "reasoning_tokens", None)
+
     if error is not None:
-        return ChatCallResult(False, content, reasoning, None, None, finish_reason, error, duration_s)
+        return ChatCallResult(
+            False, content, reasoning, None, None, None, finish_reason, error, duration_s, ttft_s, generation_s,
+        )
     return ChatCallResult(
-        True, content, reasoning,
-        usage.prompt_tokens if usage else None,
-        usage.completion_tokens if usage else None,
-        finish_reason, None, duration_s,
+        True, content, reasoning, tokens_in, tokens_out, reasoning_tokens,
+        finish_reason, None, duration_s, ttft_s, generation_s,
     )
