@@ -23,6 +23,7 @@ from typing import Callable, Optional
 class ChatCallResult:
     ok: bool
     content: str
+    reasoning: str
     tokens_in: Optional[int]
     tokens_out: Optional[int]
     finish_reason: Optional[str]
@@ -35,8 +36,8 @@ def call_chat_streaming(
     model_id: str,
     messages: list,
     on_progress: Optional[Callable[[float, str], None]] = None,
-    max_wait_without_token_s: float = 20.0,
-    max_total_s: float = 90.0,
+    max_wait_without_token_s: float = 45.0,
+    max_total_s: float = 180.0,
     **params,
 ) -> ChatCallResult:
     """Streamt eine Chat-Antwort in einem Hintergrund-Thread.
@@ -45,13 +46,18 @@ def call_chat_streaming(
     solange der Call läuft - für eine Live-Anzeige ("wartet seit X s"). Bricht ab,
     wenn `max_wait_without_token_s` lang kein neues Chunk kommt oder nach `max_total_s`
     insgesamt, statt stillschweigend bis zum vollen Client-Timeout zu hängen.
+
+    Reasoning-Modelle (z.B. gpt-oss) schicken ihr "Denken" oft als eigenes Feld
+    (delta.reasoning_content/delta.reasoning), nicht als delta.content - das zählt
+    hier ebenfalls als Lebenszeichen und wird separat in `reasoning` gesammelt.
     """
     q: "queue.Queue" = queue.Queue()
 
     def producer() -> None:
         try:
             stream = client.chat.completions.create(
-                model=model_id, messages=messages, stream=True, **params,
+                model=model_id, messages=messages, stream=True,
+                stream_options={"include_usage": True}, **params,
             )
             for chunk in stream:
                 q.put(("chunk", chunk))
@@ -63,6 +69,7 @@ def call_chat_streaming(
     threading.Thread(target=producer, daemon=True).start()
 
     content_parts: list = []
+    reasoning_parts: list = []
     usage = None
     finish_reason = None
     last_token_at = start
@@ -94,10 +101,21 @@ def call_chat_streaming(
         if kind == "done":
             break
 
-        last_token_at = time.perf_counter()
         choice = payload.choices[0] if payload.choices else None
-        if choice is not None and choice.delta is not None and choice.delta.content:
-            content_parts.append(choice.delta.content)
+        content_piece = None
+        reasoning_piece = None
+        if choice is not None and choice.delta is not None:
+            content_piece = choice.delta.content
+            reasoning_piece = (
+                getattr(choice.delta, "reasoning_content", None)
+                or getattr(choice.delta, "reasoning", None)
+            )
+        if content_piece:
+            content_parts.append(content_piece)
+        if reasoning_piece:
+            reasoning_parts.append(reasoning_piece)
+        if content_piece or reasoning_piece:
+            last_token_at = time.perf_counter()  # Lebenszeichen - auch reines Reasoning zählt
         if choice is not None and choice.finish_reason:
             finish_reason = choice.finish_reason
         if getattr(payload, "usage", None):
@@ -107,10 +125,11 @@ def call_chat_streaming(
 
     duration_s = round(time.perf_counter() - start, 3)
     content = "".join(content_parts)
+    reasoning = "".join(reasoning_parts)
     if error is not None:
-        return ChatCallResult(False, content, None, None, finish_reason, error, duration_s)
+        return ChatCallResult(False, content, reasoning, None, None, finish_reason, error, duration_s)
     return ChatCallResult(
-        True, content,
+        True, content, reasoning,
         usage.prompt_tokens if usage else None,
         usage.completion_tokens if usage else None,
         finish_reason, None, duration_s,

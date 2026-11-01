@@ -35,7 +35,7 @@ from openai import (
 )
 
 from chat_client import call_chat_streaming
-from models import SEPARATOR, build_dropdown_options, fetch_chat_models, pick_quick_test_model
+from models import SEPARATOR, build_dropdown_options, fetch_chat_models, pick_quick_test_candidates
 from pricing import estimate_cost_usd
 from rag import RagIndex, build_prompt
 from storage import RunStore
@@ -54,10 +54,15 @@ if "prompts" not in st.session_state:
     ]
 if "results" not in st.session_state:
     st.session_state.results = []
+if "unavailable_models" not in st.session_state:
+    st.session_state.unavailable_models = set()
 
 
 def _original_message(e: Exception) -> str:
-    """Die Original-Fehlermeldung aus dem Response-Body von NVIDIA Build, falls vorhanden."""
+    """Die Original-Fehlermeldung aus dem Response-Body von NVIDIA Build, falls vorhanden.
+
+    Kann Account-/Function-IDs enthalten - deshalb nur fürs Terminal-Log, nie für die UI.
+    """
     body = getattr(e, "body", None)
     if isinstance(body, dict):
         error = body.get("error")
@@ -68,28 +73,36 @@ def _original_message(e: Exception) -> str:
     return str(e)
 
 
+def log_error_detail(context: str, e: Exception) -> None:
+    """Volle Fehlermeldung (kann Account-/Function-IDs enthalten) nur ins Terminal, nie in die UI."""
+    print(
+        f"[{datetime.now(timezone.utc).isoformat()}] FEHLERDETAIL {context}: "
+        f"{type(e).__name__}: {_original_message(e)}",
+        flush=True,
+    )
+
+
 def describe_api_error(e: Exception) -> str:
-    """Lesbare deutsche Fehlermeldung statt Traceback in der UI, inkl. Original-Meldung."""
+    """Kurze, deutsche Fehlermeldung ohne Account-/Function-IDs - Details gehen ins Terminal-Log."""
     if isinstance(e, TimeoutError):  # unser eigener Stream-Timeout (chat_client.py), kein Server-Fehler
         return f"Zeitüberschreitung: {e}"
-    detail = _original_message(e)
     if isinstance(e, AuthenticationError):
-        return f"API-Key ungültig oder abgelehnt (401). NVIDIA Build: {detail}"
+        return "API-Key ungültig oder abgelehnt (401)."
     if isinstance(e, RateLimitError):
-        return f"Rate-Limit bei NVIDIA Build erreicht (429) - kurz warten und erneut versuchen. NVIDIA Build: {detail}"
+        return "Rate-Limit bei NVIDIA Build erreicht (429) - kurz warten und erneut versuchen."
     if isinstance(e, NotFoundError):
-        return f"Modell nicht gefunden (404) - Modell-ID in NVIDIA Build prüfen. NVIDIA Build: {detail}"
+        return "Modell nicht gefunden oder für diesen Account nicht verfügbar (404)."
     if isinstance(e, APIStatusError) and e.status_code == 410:
-        return f"Modell nicht mehr verfügbar (410) - bitte ein anderes Modell wählen. NVIDIA Build: {detail}"
+        return "Modell nicht mehr verfügbar (410) - bitte ein anderes Modell wählen."
     if isinstance(e, APIStatusError):
-        return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code}). NVIDIA Build: {detail}"
+        return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code})."
     if isinstance(e, APITimeoutError):
         return f"Zeitüberschreitung ({REQUEST_TIMEOUT_S:.0f} s) - keine Antwort von NVIDIA Build erhalten."
     if isinstance(e, APIConnectionError):
-        return f"Verbindung zu NVIDIA Build fehlgeschlagen (Netzwerk): {detail}"
+        return "Verbindung zu NVIDIA Build fehlgeschlagen (Netzwerk)."
     if isinstance(e, APIError):
-        return f"Verbindung zu NVIDIA Build fehlgeschlagen: {detail}"
-    return f"Unbekannter Fehler beim API-Aufruf: {detail}"
+        return "Verbindung zu NVIDIA Build fehlgeschlagen."
+    return "Unbekannter Fehler beim API-Aufruf."
 
 
 @st.cache_resource
@@ -138,43 +151,58 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
             st.write("**Alle Chat-Modell-IDs:**")
             st.code("\n".join(sorted(chat_models)))
 
-        test_model = pick_quick_test_model(chat_models)
-        if not test_model:
+        candidates = pick_quick_test_candidates(chat_models, limit=5)
+        if not candidates:
             st.sidebar.warning("Kein passendes Modell im Katalog gefunden.")
         else:
-            sent_params = {"model": test_model, "temperature": 0.2, "max_tokens": 20}
             status_box = st.sidebar.empty()
             text_box = st.sidebar.empty()
+            tried, result, test_model = [], None, None
 
             def _on_progress(elapsed_s: float, partial_text: str) -> None:
                 status_box.caption(f"wartet seit {elapsed_s:.0f} s ...")
                 if partial_text:
                     text_box.markdown(f"*(läuft)* {partial_text}")
 
-            print(f"[{datetime.now(timezone.utc).isoformat()}] START {test_model} (Verbindungstest)", flush=True)
-            result = call_chat_streaming(
-                client, test_model,
-                [{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
-                on_progress=_on_progress,
-                temperature=sent_params["temperature"],
-                max_tokens=sent_params["max_tokens"],
-            )
+            sent_params = {"temperature": 0.2, "max_tokens": 20}
+            for candidate in candidates:
+                tried.append(candidate)
+                print(f"[{datetime.now(timezone.utc).isoformat()}] START {candidate} (Verbindungstest)", flush=True)
+                result = call_chat_streaming(
+                    client, candidate,
+                    [{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
+                    on_progress=_on_progress,
+                    temperature=sent_params["temperature"],
+                    max_tokens=sent_params["max_tokens"],
+                )
+                print(
+                    f"[{datetime.now(timezone.utc).isoformat()}] ENDE {candidate} "
+                    f"dauer={result.duration_s}s status={'OK' if result.ok else 'FEHLER'}",
+                    flush=True,
+                )
+                if not result.ok:
+                    log_error_detail(f"Verbindungstest {candidate}", result.error)
+                test_model = candidate
+                if result.ok or not isinstance(result.error, NotFoundError):
+                    break  # Erfolg, oder ein Fehler, der auch bei anderen Modellen käme (z.B. 401)
+                st.sidebar.caption(f"{candidate}: für diesen Account nicht verfügbar (404) - nächstes Modell ...")
+
             status_box.empty()
             text_box.empty()
-            print(
-                f"[{datetime.now(timezone.utc).isoformat()}] ENDE {test_model} "
-                f"dauer={result.duration_s}s status={'OK' if result.ok else 'FEHLER'}",
-                flush=True,
-            )
             if result.ok:
                 st.sidebar.success(f"Testaufruf an {test_model} beantwortet ({result.duration_s} s).")
+                if len(tried) > 1:
+                    st.sidebar.caption(f"Nicht verfügbar probiert: {', '.join(tried[:-1])}")
                 st.sidebar.write("**Antwort:**", result.content)
-                st.sidebar.write("**Gesendete Parameter:**", sent_params)
+                st.sidebar.write("**Gesendete Parameter:**", {"model": test_model, **sent_params})
                 st.sidebar.write(
                     "**usage (roh von NVIDIA Build):**",
                     {"prompt_tokens": result.tokens_in, "completion_tokens": result.tokens_out},
                 )
                 st.sidebar.write("**finish_reason:**", result.finish_reason)
+                if result.reasoning:
+                    with st.sidebar.expander("Reasoning"):
+                        st.write(result.reasoning)
             else:
                 st.sidebar.error(describe_api_error(result.error))
 
@@ -190,8 +218,16 @@ else:
         st.sidebar.error(describe_api_error(e))
         chat_models = []
     dropdown_options = build_dropdown_options(chat_models)
-    choices = [m for m in dropdown_options if m != SEPARATOR]
+    choices = [
+        m for m in dropdown_options
+        if m != SEPARATOR and m not in st.session_state.unavailable_models
+    ]
     st.sidebar.caption(f"{len(choices)} Chat-Modelle geladen - Top 10 zuerst, dann der Rest alphabetisch.")
+    if st.session_state.unavailable_models:
+        st.sidebar.caption(
+            "Für diesen Account nicht verfügbar (ausgeblendet): "
+            + ", ".join(sorted(st.session_state.unavailable_models))
+        )
     selected = st.sidebar.multiselect("Modelle", choices, default=[])
 
 # ---------------- Sidebar: RAG ----------------
@@ -277,14 +313,24 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
             )
             duration = result.duration_s
             if result.ok:
-                row.update(ok=True, response=result.content, tokens_in=result.tokens_in, tokens_out=result.tokens_out)
+                row.update(
+                    ok=True, response=result.content, reasoning=result.reasoning,
+                    tokens_in=result.tokens_in, tokens_out=result.tokens_out,
+                )
                 status = "OK"
             else:
-                row.update(ok=False, response=describe_api_error(result.error), tokens_in=None, tokens_out=None)
+                log_error_detail(f"Benchmark {model_id}/{prompt['id']}", result.error)
+                if isinstance(result.error, NotFoundError):
+                    st.session_state.unavailable_models.add(model_id)
+                    response_text = "Im Katalog, aber für diesen Account nicht verfügbar (404)."
+                else:
+                    response_text = describe_api_error(result.error)
+                row.update(ok=False, response=response_text, reasoning="", tokens_in=None, tokens_out=None)
                 status = f"FEHLER: {row['response']}"
         except Exception as e:  # unerwarteter Fehler (z.B. RAG-Retrieval): Zeile bleibt sichtbar, Lauf läuft weiter
             duration = round(time.perf_counter() - call_start, 3)
-            row.update(ok=False, response=describe_api_error(e), tokens_in=None, tokens_out=None)
+            log_error_detail(f"Benchmark {model_id}/{prompt['id']}", e)
+            row.update(ok=False, response=describe_api_error(e), reasoning="", tokens_in=None, tokens_out=None)
             status = f"FEHLER: {row['response']}"
 
         print(
@@ -312,6 +358,15 @@ if st.session_state.results:
         use_container_width=True,
     )
     st.caption(f"Geschätzte Gesamtkosten dieses Laufs: ${df['cost_usd'].sum():.6f} (Preise: pricing.py, Richtwerte)")
+
+    reasoning_rows = [r for r in st.session_state.results if r.get("reasoning")]
+    if reasoning_rows:
+        with st.expander(f"Reasoning ({len(reasoning_rows)} Zeile/n mit Denkprozess)"):
+            for r in reasoning_rows:
+                st.markdown(f"**{r['model_id']} · {r['prompt_id']}**")
+                st.write(r["reasoning"])
+                st.divider()
+
     run_id = st.session_state.results[0]["run_id"]
     col_json, col_csv = st.columns(2)
     col_json.download_button("JSON", json.dumps(st.session_state.results, ensure_ascii=False, indent=2),

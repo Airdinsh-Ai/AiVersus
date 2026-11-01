@@ -107,12 +107,28 @@ def build_dropdown_options(chat_models: list) -> list:
     return top_sorted + [SEPARATOR] + rest_sorted
 
 
+def pick_quick_test_candidates(chat_models: list, limit: int = 5) -> list:
+    """Bis zu `limit` kandidaten für den Verbindungstest, kleine/schnelle Modelle zuerst.
+
+    Mehrere Kandidaten statt einer festen ID: Taucht ein Modell im Katalog auf, ist aber
+    für den Account nicht freigeschaltet (404), probiert der Aufrufer den nächsten.
+    """
+    if not chat_models:
+        return []
+    ranked, seen = [], set()
+    for hint in QUICK_TEST_HINTS:
+        for m in sorted(m for m in chat_models if hint in m.lower()):
+            if m not in seen:
+                ranked.append(m)
+                seen.add(m)
+    for m in sorted(chat_models):
+        if m not in seen:
+            ranked.append(m)
+            seen.add(m)
+    return ranked[:limit]
+
+
 def pick_quick_test_model(chat_models: list) -> str | None:
     """Ein kleines/schnelles Modell aus dem Katalog für den Verbindungstest - keine feste ID."""
-    if not chat_models:
-        return None
-    for hint in QUICK_TEST_HINTS:
-        matches = sorted(m for m in chat_models if hint in m.lower())
-        if matches:
-            return matches[0]
-    return sorted(chat_models)[0]
+    candidates = pick_quick_test_candidates(chat_models, limit=1)
+    return candidates[0] if candidates else None

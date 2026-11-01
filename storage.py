@@ -57,13 +57,18 @@ class RunStore:
         return len(rows)
 
     def load_for_models(self, model_ids: list) -> pd.DataFrame:
-        """Alle gespeicherten Zeilen der gewählten Modelle, älteste zuerst."""
+        """Erfolgreiche Zeilen (ok=1) der gewählten Modelle, älteste zuerst.
+
+        Fehlgeschlagene Calls verzerren Latenz/Tokens/Kosten-Mittelwerte und
+        gehören nicht in die Timeline - die steht nur in der Ergebnistabelle.
+        """
         if not model_ids:
             return pd.DataFrame()
         marks = ",".join("?" for _ in model_ids)
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql_query(
-                f"SELECT * FROM results WHERE model_id IN ({marks}) ORDER BY timestamp", conn, params=model_ids
+                f"SELECT * FROM results WHERE model_id IN ({marks}) AND ok = 1 ORDER BY timestamp",
+                conn, params=model_ids,
             )
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         return df
