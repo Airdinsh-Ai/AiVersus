@@ -21,6 +21,10 @@ Nicht jedes NVIDIA-Build-Modell versteht jeden OpenAI-Parameter (z.B. seed oder
 stream_options). Ein 400 mit einem erkannten Parameter führt zu genau einem
 Retry ohne diesen Parameter - ChatCallResult.used_params/dropped_param zeigen,
 was am Ende tatsächlich gesendet wurde.
+
+Ein optionales `cancel_event` (threading.Event) erlaubt den Abbruch von außen:
+wird es gesetzt, schließt call_chat_streaming den offenen Stream aktiv
+(stream.close()) und gibt ein ChatCallResult mit StreamCancelled als error zurück.
 """
 
 import queue
@@ -30,6 +34,10 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from openai import BadRequestError
+
+
+class StreamCancelled(Exception):
+    """Der Call wurde über cancel_event von außen abgebrochen (Stop-Button)."""
 
 
 @dataclass
@@ -74,13 +82,23 @@ def _call_once(
     on_progress: Optional[Callable[[float, str, bool], None]],
     first_token_timeout_s: float, inter_token_timeout_s: float,
     params: dict,
+    cancel_event: Optional[threading.Event] = None,
 ) -> ChatCallResult:
     q: "queue.Queue" = queue.Queue()
+    stream_holder: dict = {}
 
     def producer() -> None:
         try:
             stream = client.chat.completions.create(model=model_id, messages=messages, stream=True, **params)
+            stream_holder["stream"] = stream
             for chunk in stream:
+                if cancel_event is not None and cancel_event.is_set():
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+                    q.put(("cancelled", None))
+                    return
                 q.put(("chunk", chunk))
             q.put(("done", None))
         except Exception as exc:  # landet im Hauptthread als Fehlerergebnis, kein Traceback in der UI
@@ -98,6 +116,16 @@ def _call_once(
     error: Optional[Exception] = None
 
     while True:
+        if cancel_event is not None and cancel_event.is_set():
+            stream_obj = stream_holder.get("stream")
+            if stream_obj is not None:
+                try:
+                    stream_obj.close()  # weckt einen im Netzwerk-Read blockierten Producer-Thread auf
+                except Exception:
+                    pass
+            error = StreamCancelled("Vom Nutzer abgebrochen.")
+            break
+
         now = time.perf_counter()
         elapsed_total = now - start
         if first_token_at is None:
@@ -122,6 +150,9 @@ def _call_once(
 
         if kind == "error":
             error = payload
+            break
+        if kind == "cancelled":
+            error = StreamCancelled("Vom Nutzer abgebrochen.")
             break
         if kind == "done":
             break
@@ -183,6 +214,7 @@ def call_chat_streaming(
     on_progress: Optional[Callable[[float, str, bool], None]] = None,
     first_token_timeout_s: float = 300.0,
     inter_token_timeout_s: float = 60.0,
+    cancel_event: Optional[threading.Event] = None,
     **params,
 ) -> ChatCallResult:
     """Streamt eine Chat-Antwort in einem Hintergrund-Thread.
@@ -193,11 +225,16 @@ def call_chat_streaming(
 
     Lehnt NVIDIA Build einen Parameter mit 400 ab (nicht jedes Modell versteht
     z.B. seed), wird genau einmal ohne diesen Parameter wiederholt.
+
+    `cancel_event` gesetzt (Stop-Button): bricht sofort ab, schließt den Stream aktiv.
     """
     attempt_params = dict(params)
     attempt_params["stream_options"] = {"include_usage": True}
 
-    result = _call_once(client, model_id, messages, on_progress, first_token_timeout_s, inter_token_timeout_s, attempt_params)
+    result = _call_once(
+        client, model_id, messages, on_progress, first_token_timeout_s, inter_token_timeout_s,
+        attempt_params, cancel_event,
+    )
     if result.ok or not isinstance(result.error, BadRequestError):
         return result
 
@@ -207,6 +244,9 @@ def call_chat_streaming(
 
     retry_params = dict(attempt_params)
     retry_params.pop(offending, None)
-    retried = _call_once(client, model_id, messages, on_progress, first_token_timeout_s, inter_token_timeout_s, retry_params)
+    retried = _call_once(
+        client, model_id, messages, on_progress, first_token_timeout_s, inter_token_timeout_s,
+        retry_params, cancel_event,
+    )
     retried.dropped_param = offending
     return retried
