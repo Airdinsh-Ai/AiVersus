@@ -42,6 +42,8 @@ MIGRATIONS = [
     ("tokens_per_s", "REAL"),
     ("reasoning_tokens", "INTEGER"),
     ("sent_params", "TEXT"),
+    ("stars", "INTEGER"),  # 1-5, NULL = nicht bewertet
+    ("is_best", "INTEGER"),  # 1 = "Beste Antwort" für diesen Prompt in diesem Lauf, sonst 0/NULL
 ]
 
 
@@ -65,14 +67,42 @@ class RunStore:
                 json.dumps(r.get("retrieved_sources", []), ensure_ascii=False),
                 r.get("ttft_s"), r.get("generation_s"), r.get("tokens_per_s"), r.get("reasoning_tokens"),
                 json.dumps(r.get("sent_params"), ensure_ascii=False) if r.get("sent_params") is not None else None,
+                r.get("stars"), 1 if r.get("is_best") else 0,
             )
             for r in results
         ]
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
-                "INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
+                "INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
             )
         return len(rows)
+
+    def set_stars(self, run_id: str, model_id: str, prompt_id: str, stars: int) -> None:
+        """1-5 Sterne für eine einzelne Antwort (run_id/model_id/prompt_id)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE results SET stars = ? WHERE run_id = ? AND model_id = ? AND prompt_id = ?",
+                (stars, run_id, model_id, prompt_id),
+            )
+
+    def set_best_answer(self, run_id: str, prompt_id: str, model_id: str | None) -> None:
+        """Markiert `model_id` als beste Antwort für diesen Prompt in diesem Lauf (None = keine)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE results SET is_best = 0 WHERE run_id = ? AND prompt_id = ?", (run_id, prompt_id))
+            if model_id is not None:
+                conn.execute(
+                    "UPDATE results SET is_best = 1 WHERE run_id = ? AND prompt_id = ? AND model_id = ?",
+                    (run_id, prompt_id, model_id),
+                )
+
+    def wins_per_model(self) -> pd.DataFrame:
+        """{model_id, wins} über alle Läufe - Grundlage für "Siege pro Modell" in der Timeline."""
+        with sqlite3.connect(self.db_path) as conn:
+            return pd.read_sql_query(
+                "SELECT model_id, COUNT(*) AS wins FROM results WHERE is_best = 1 "
+                "GROUP BY model_id ORDER BY wins DESC",
+                conn,
+            )
 
     def load_for_models(self, model_ids: list) -> pd.DataFrame:
         """Erfolgreiche Zeilen (ok=1) der gewählten Modelle, älteste zuerst.

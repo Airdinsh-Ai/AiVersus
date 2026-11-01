@@ -515,6 +515,8 @@ def _build_result_row(run_id: str, model_id: str, prompt: dict, result, exc, cal
         "injected_context": False,
         "retrieved_sources": [],
         "sent_params": _actual_sent_params(result),
+        "stars": None,
+        "is_best": False,
     }
     if exc is not None:
         duration = round(time.perf_counter() - call_start, 3)
@@ -698,6 +700,10 @@ def _render_result_card(row: dict) -> str:
         + f" · {_fmt(row.get('tokens_per_s'), ' Tok/s', 1)} · {_fmt_cost(row.get('cost_usd'))}"
     )
     status_html = "" if row["ok"] else "<div style='color:#E85D75;font-weight:600;margin-bottom:6px;'>Fehler</div>"
+    if row.get("is_best"):
+        status_html += "<div style='color:#F2B34A;font-weight:600;margin-bottom:6px;'>★ Beste Antwort</div>"
+    if row.get("stars"):
+        status_html += f"<div style='color:#F2B34A;margin-bottom:6px;'>{'★' * row['stars']}{'☆' * (5 - row['stars'])}</div>"
     reasoning_html = ""
     if row.get("reasoning"):
         reasoning_html = (
@@ -742,12 +748,41 @@ if st.session_state.results:
 
     for prompt_id in prompt_order:
         prompt_text = next((p["text"] for p in st.session_state.prompts if p["id"] == prompt_id), prompt_id)
+        rows_for_prompt = by_prompt[prompt_id]
+        run_id_for_rating = rows_for_prompt[0]["run_id"]
+
         st.markdown(f"**{prompt_id} · {prompt_text}**")
-        cards = "".join(_render_result_card(r) for r in by_prompt[prompt_id])
+        cards = "".join(_render_result_card(r) for r in rows_for_prompt)
         st.markdown(
             f"<div style='display:flex;gap:16px;overflow-x:auto;padding-bottom:12px;'>{cards}</div>",
             unsafe_allow_html=True,
         )
+
+        model_ids_here = [r["model_id"] for r in rows_for_prompt]
+        current_best_model = next((r["model_id"] for r in rows_for_prompt if r.get("is_best")), None)
+        best_options = ["Keine"] + model_ids_here
+        best_choice = st.radio(
+            "Beste Antwort", best_options,
+            index=best_options.index(current_best_model) if current_best_model in best_options else 0,
+            horizontal=True, key=f"best_{run_id_for_rating}_{prompt_id}",
+        )
+        winner = best_choice if best_choice != "Keine" else None
+        if winner != current_best_model:
+            for r in rows_for_prompt:
+                r["is_best"] = (r["model_id"] == winner)
+            store.set_best_answer(run_id_for_rating, prompt_id, winner)
+
+        star_cols = st.columns(len(rows_for_prompt))
+        for col, r in zip(star_cols, rows_for_prompt):
+            with col:
+                st.caption(r["model_id"])
+                stars = st.feedback(
+                    "stars", key=f"stars_{run_id_for_rating}_{r['model_id']}_{prompt_id}",
+                )
+                if stars is not None and stars + 1 != r.get("stars"):
+                    r["stars"] = stars + 1
+                    store.set_stars(run_id_for_rating, r["model_id"], prompt_id, stars + 1)
+        st.divider()
 
     df = pd.DataFrame(st.session_state.results)
     known_cost = df["cost_usd"].dropna()
@@ -837,3 +872,10 @@ else:
                 f"{store.run_count()} Lauf/Läufe gespeichert. Voraussetzung: Der Anbieter hält die Modell-ID stabil — "
                 "bei einer Umbenennung reißt die Zeitreihe ab."
             )
+
+    st.markdown("**Siege pro Modell**")
+    wins = store.wins_per_model()
+    if wins.empty:
+        st.caption("Noch keine 'Beste Antwort' markiert.")
+    else:
+        st.bar_chart(wins.set_index("model_id")["wins"])

@@ -11,6 +11,13 @@ nur gemockte Clients (kein API-Key vorhanden).
 Dieser Abschnitt wird während der Nacht laufend ergänzt (neueste Einträge oben
 innerhalb des Abschnitts).
 
+- Beim Testen von storage.py-Methoden ist versehentlich eine Testzeile
+  (run_id "testrun") in die echte, lokale `runs.db` gelangt (die Datei existiert
+  schon aus den Live-Tests des Nutzers, ist aber gitignored). Zeile sofort wieder
+  gezielt gelöscht (`DELETE ... WHERE run_id='testrun'`), echte Daten unberührt.
+  Ab jetzt für alle weiteren isolierten storage.py-Tests eine `tempfile`-DB
+  verwenden, nie die Projekt-`runs.db`.
+
 ## 2026-10-18
 
 ### Was gemacht
