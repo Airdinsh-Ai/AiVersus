@@ -34,6 +34,7 @@ from openai import (
     RateLimitError,
 )
 
+from chat_client import call_chat_streaming
 from models import SEPARATOR, build_dropdown_options, fetch_chat_models, pick_quick_test_model
 from pricing import estimate_cost_usd
 from rag import RagIndex, build_prompt
@@ -69,6 +70,8 @@ def _original_message(e: Exception) -> str:
 
 def describe_api_error(e: Exception) -> str:
     """Lesbare deutsche Fehlermeldung statt Traceback in der UI, inkl. Original-Meldung."""
+    if isinstance(e, TimeoutError):  # unser eigener Stream-Timeout (chat_client.py), kein Server-Fehler
+        return f"Zeitüberschreitung: {e}"
     detail = _original_message(e)
     if isinstance(e, AuthenticationError):
         return f"API-Key ungültig oder abgelehnt (401). NVIDIA Build: {detail}"
@@ -96,7 +99,7 @@ def get_index(api_key: str) -> RagIndex:
 
 @st.cache_data(ttl=300, show_spinner="Modellkatalog wird geladen ...")
 def _load_chat_models(api_key: str) -> list:
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=REQUEST_TIMEOUT_S)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=REQUEST_TIMEOUT_S, max_retries=0)
     return fetch_chat_models(client)
 
 
@@ -115,7 +118,7 @@ st.sidebar.divider()
 st.sidebar.subheader("Verbindungstest")
 st.sidebar.caption("Lädt zuerst den Modellkatalog (prüft den Key), dann ein kurzer Testaufruf an ein kleines Modell daraus.")
 if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S, max_retries=0)
     try:
         chat_models = fetch_chat_models(client)  # ungecacht - der Test soll den Key gerade neu prüfen
     except Exception as e:
@@ -140,31 +143,40 @@ if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
             st.sidebar.warning("Kein passendes Modell im Katalog gefunden.")
         else:
             sent_params = {"model": test_model, "temperature": 0.2, "max_tokens": 20}
-            start = time.perf_counter()
-            try:
-                resp = client.chat.completions.create(
-                    model=sent_params["model"],
-                    messages=[{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
-                    temperature=sent_params["temperature"],
-                    max_tokens=sent_params["max_tokens"],
-                )
-                latency = round(time.perf_counter() - start, 3)
-                choice = resp.choices[0]
-                usage = resp.usage
-                st.sidebar.success(f"Testaufruf an {test_model} beantwortet ({latency} s).")
-                st.sidebar.write("**Antwort:**", choice.message.content)
+            status_box = st.sidebar.empty()
+            text_box = st.sidebar.empty()
+
+            def _on_progress(elapsed_s: float, partial_text: str) -> None:
+                status_box.caption(f"wartet seit {elapsed_s:.0f} s ...")
+                if partial_text:
+                    text_box.markdown(f"*(läuft)* {partial_text}")
+
+            print(f"[{datetime.now(timezone.utc).isoformat()}] START {test_model} (Verbindungstest)", flush=True)
+            result = call_chat_streaming(
+                client, test_model,
+                [{"role": "user", "content": "Antworte in einem Wort: Test erfolgreich."}],
+                on_progress=_on_progress,
+                temperature=sent_params["temperature"],
+                max_tokens=sent_params["max_tokens"],
+            )
+            status_box.empty()
+            text_box.empty()
+            print(
+                f"[{datetime.now(timezone.utc).isoformat()}] ENDE {test_model} "
+                f"dauer={result.duration_s}s status={'OK' if result.ok else 'FEHLER'}",
+                flush=True,
+            )
+            if result.ok:
+                st.sidebar.success(f"Testaufruf an {test_model} beantwortet ({result.duration_s} s).")
+                st.sidebar.write("**Antwort:**", result.content)
                 st.sidebar.write("**Gesendete Parameter:**", sent_params)
                 st.sidebar.write(
                     "**usage (roh von NVIDIA Build):**",
-                    {
-                        "prompt_tokens": usage.prompt_tokens if usage else None,
-                        "completion_tokens": usage.completion_tokens if usage else None,
-                        "total_tokens": usage.total_tokens if usage else None,
-                    },
+                    {"prompt_tokens": result.tokens_in, "completion_tokens": result.tokens_out},
                 )
-                st.sidebar.write("**finish_reason:**", choice.finish_reason)
-            except Exception as e:
-                st.sidebar.error(describe_api_error(e))
+                st.sidebar.write("**finish_reason:**", result.finish_reason)
+            else:
+                st.sidebar.error(describe_api_error(result.error))
 
 # ---------------- Sidebar: Modelle ----------------
 st.sidebar.header("Modelle")
@@ -228,11 +240,13 @@ if use_rag and not rag_ready:
 
 # ---------------- Ausführung ----------------
 if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and prompts and nvidia_key)):
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S, max_retries=0)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tasks = [(m, p) for m in selected for p in prompts]
     st.session_state.results = []
     progress = st.progress(0.0)
+    status_box = st.empty()
+    text_box = st.empty()
 
     for n, (model_id, prompt) in enumerate(tasks):
         progress.progress(n / len(tasks), text=f"{n + 1}/{len(tasks)} · {model_id} · {prompt['id']}")
@@ -245,28 +259,47 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
             "injected_context": rag_ready,
             "retrieved_sources": [],
         }
-        start = time.perf_counter()
+
+        def _on_progress(elapsed_s: float, partial_text: str, _model=model_id, _pid=prompt["id"]) -> None:
+            status_box.caption(f"{_model} · {_pid} - wartet seit {elapsed_s:.0f} s ...")
+            if partial_text:
+                text_box.markdown(partial_text)
+
+        call_start = time.perf_counter()
+        print(f"[{datetime.now(timezone.utc).isoformat()}] START {model_id} prompt={prompt['id']}", flush=True)
         try:
             retrieved = index.retrieve(prompt["text"], 4) if rag_ready else []
             row["retrieved_sources"] = [f"{c.source}#{c.chunk_index}" for c in retrieved]
-            resp = client.chat.completions.create(
-                model=model_id,
-                messages=[{"role": "user", "content": build_prompt(prompt["text"], retrieved)}],
+            result = call_chat_streaming(
+                client, model_id,
+                [{"role": "user", "content": build_prompt(prompt["text"], retrieved)}],
+                on_progress=_on_progress,
             )
-            row.update(
-                ok=True,
-                response=resp.choices[0].message.content,
-                tokens_in=resp.usage.prompt_tokens if resp.usage else None,
-                tokens_out=resp.usage.completion_tokens if resp.usage else None,
-            )
-        except Exception as e:  # API-/Timeout-/sonstiger Fehler: Zeile bleibt sichtbar, Lauf läuft weiter
+            duration = result.duration_s
+            if result.ok:
+                row.update(ok=True, response=result.content, tokens_in=result.tokens_in, tokens_out=result.tokens_out)
+                status = "OK"
+            else:
+                row.update(ok=False, response=describe_api_error(result.error), tokens_in=None, tokens_out=None)
+                status = f"FEHLER: {row['response']}"
+        except Exception as e:  # unerwarteter Fehler (z.B. RAG-Retrieval): Zeile bleibt sichtbar, Lauf läuft weiter
+            duration = round(time.perf_counter() - call_start, 3)
             row.update(ok=False, response=describe_api_error(e), tokens_in=None, tokens_out=None)
-        row["latency_s"] = round(time.perf_counter() - start, 3)
+            status = f"FEHLER: {row['response']}"
+
+        print(
+            f"[{datetime.now(timezone.utc).isoformat()}] ENDE {model_id} prompt={prompt['id']} "
+            f"dauer={duration}s status={status}",
+            flush=True,
+        )
+        row["latency_s"] = duration
         row["cost_usd"] = estimate_cost_usd(model_id, row["tokens_in"], row["tokens_out"])
 
         st.session_state.results.append(row)
         store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
 
+    status_box.empty()
+    text_box.empty()
     progress.progress(1.0, text="Fertig")
 
 # ---------------- Ergebnisse ----------------
