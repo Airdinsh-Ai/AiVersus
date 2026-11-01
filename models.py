@@ -18,33 +18,47 @@ import re
 
 from openai import OpenAI
 
-EMBED_RERANK_PATTERNS = ("embed", "rerank", "retriev")
+# Nicht-Chat-Modelle, die trotzdem im Katalog auftauchen: Embedding/Rerank sowie
+# Guard-/Safety-/Moderation-, Dokument-Parse- und Reward-Modelle (keine normalen
+# Chat-Antworten) und reine Bild-zu-Text-Modelle (OCR/Caption).
+EXCLUDE_PATTERNS = (
+    "embed", "rerank", "retriev",
+    "guard", "safety", "moderation", "nemoguard",
+    "parse", "reward",
+    "ocr", "caption",
+)
 QUICK_TEST_HINTS = ("8b", "3b", "mini", "small", "lite", "nano")
 SEPARATOR = "──────────"
 
-# Anzeigename -> (erwartete Namespace-Präfixe "org/", Namensmuster in der Modell-ID).
-# ACHTUNG: Die Namespace-Präfixe sind eine Annahme nach dem üblichen NVIDIA-Build-Schema
-# "org/modell" - noch nicht gegen den echten Katalog verifiziert. Ohne die Org-Einschränkung
-# matcht z.B. "nvidia/llama-3.1-nemotron-70b-instruct" sowohl "Llama" als auch "Nemotron"
-# und gewinnt durch den Namespace-Alphabetvorteil ("nvidia" > "meta") fälschlich den
-# Llama-Slot - deshalb wird pro Familie auf den erwarteten Hersteller-Namespace eingegrenzt.
+# Anzeigename -> (erwartete Namespace-Präfixe "org/", mögliche Namensmuster in der Modell-ID).
+# ACHTUNG: Namespace-Präfixe und Namensmuster sind Annahmen nach dem üblichen NVIDIA-Build-
+# Schema "org/modell" - gegen den echten Katalog (Katalog-Diagnose) zu verifizieren.
+# Die Org-Einschränkung verhindert, dass z.B. "nvidia/llama-3.1-nemotron-70b-instruct"
+# fälschlich den Llama-Slot gewinnt statt eines echten Meta-Llama-Modells. Bei Mistral
+# sind mehrere Namensmuster nötig, weil Mistral AIs Flaggschiff "mixtral" heißt, nicht
+# "mistral" - eine reine Teilstring-Suche nach "mistral" würde es verfehlen.
 TOP_FAMILIES = {
-    "DeepSeek": (("deepseek-ai",), "deepseek"),
-    "Gemma": (("google",), "gemma"),
-    "GLM": (("zai-org", "thudm", "zhipuai"), "glm"),
-    "gpt-oss": (("openai",), "gpt-oss"),
-    "Kimi": (("moonshotai",), "kimi"),
-    "Llama": (("meta",), "llama"),
-    "Mistral": (("mistralai",), "mistral"),
-    "Nemotron": (("nvidia",), "nemotron"),
-    "Phi": (("microsoft",), "phi"),
-    "Qwen": (("qwen", "alibaba"), "qwen"),
+    "DeepSeek": (("deepseek-ai",), ("deepseek",)),
+    "Gemma": (("google",), ("gemma",)),
+    "GLM": (("zai-org", "thudm", "zhipuai"), ("glm",)),
+    "gpt-oss": (("openai",), ("gpt-oss",)),
+    "Kimi": (("moonshotai",), ("kimi",)),
+    "Llama": (("meta",), ("llama",)),
+    "Mistral": (("mistralai",), ("mistral", "mixtral", "pixtral")),
+    "Nemotron": (("nvidia",), ("nemotron",)),
+    "Phi": (("microsoft",), ("phi",)),
+    "Qwen": (("qwen", "alibaba"), ("qwen",)),
 }
 
 
 def _is_chat_model(model_id: str) -> bool:
     lowered = model_id.lower()
-    return not any(pattern in lowered for pattern in EMBED_RERANK_PATTERNS)
+    return not any(pattern in lowered for pattern in EXCLUDE_PATTERNS)
+
+
+def _has_token(model_id: str, keyword: str) -> bool:
+    """`keyword` als eigenes Namenssegment - verhindert Fehltreffer wie 'recurrentgemma' für 'gemma'."""
+    return re.search(rf"(?<![a-z]){re.escape(keyword)}(?![a-z])", model_id.lower()) is not None
 
 
 def _natural_key(model_id: str):
@@ -54,7 +68,7 @@ def _natural_key(model_id: str):
 
 
 def fetch_chat_models(client: OpenAI) -> list:
-    """Alle Chat-Modell-IDs von NVIDIA Build, Embedding-/Rerank-Modelle ausgefiltert."""
+    """Alle Chat-Modell-IDs von NVIDIA Build, Nicht-Chat-Modelle (siehe EXCLUDE_PATTERNS) ausgefiltert."""
     response = client.models.list()
     return sorted(m.id for m in response.data if _is_chat_model(m.id))
 
@@ -62,14 +76,16 @@ def fetch_chat_models(client: OpenAI) -> list:
 def latest_per_family(chat_models: list) -> dict:
     """{Anzeigename: Modell-ID} - je Top-Familie das laut Namensmuster neueste Modell.
 
-    Eingrenzung auf den erwarteten Hersteller-Namespace, damit z.B. eine
-    Nemotron-Finetune von Llama nicht versehentlich den Llama-Slot gewinnt.
+    Eingrenzung auf den erwarteten Hersteller-Namespace plus Wortgrenzen-Suche, damit
+    weder eine Nemotron-Finetune von Llama den Llama-Slot gewinnt noch z.B.
+    "recurrentgemma" den Gemma-Slot.
     """
     picks = {}
-    for label, (orgs, pattern) in TOP_FAMILIES.items():
+    for label, (orgs, keywords) in TOP_FAMILIES.items():
         matches = [
             m for m in chat_models
-            if pattern in m.lower() and any(m.lower().startswith(f"{org}/") for org in orgs)
+            if any(m.lower().startswith(f"{org}/") for org in orgs)
+            and any(_has_token(m, kw) for kw in keywords)
         ]
         if matches:
             picks[label] = max(matches, key=_natural_key)

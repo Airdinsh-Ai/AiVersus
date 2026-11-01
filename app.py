@@ -24,8 +24,10 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 from openai import (
+    APIConnectionError,
     APIError,
     APIStatusError,
+    APITimeoutError,
     AuthenticationError,
     NotFoundError,
     OpenAI,
@@ -41,6 +43,7 @@ st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
 store = RunStore()
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+REQUEST_TIMEOUT_S = 60.0  # ein hängender Call darf den Lauf/die Session nicht blockieren
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", "Andere…"]
 
 if "prompts" not in st.session_state:
@@ -77,6 +80,10 @@ def describe_api_error(e: Exception) -> str:
         return f"Modell nicht mehr verfügbar (410) - bitte ein anderes Modell wählen. NVIDIA Build: {detail}"
     if isinstance(e, APIStatusError):
         return f"NVIDIA Build hat den Aufruf abgelehnt (Status {e.status_code}). NVIDIA Build: {detail}"
+    if isinstance(e, APITimeoutError):
+        return f"Zeitüberschreitung ({REQUEST_TIMEOUT_S:.0f} s) - keine Antwort von NVIDIA Build erhalten."
+    if isinstance(e, APIConnectionError):
+        return f"Verbindung zu NVIDIA Build fehlgeschlagen (Netzwerk): {detail}"
     if isinstance(e, APIError):
         return f"Verbindung zu NVIDIA Build fehlgeschlagen: {detail}"
     return f"Unbekannter Fehler beim API-Aufruf: {detail}"
@@ -89,7 +96,7 @@ def get_index(api_key: str) -> RagIndex:
 
 @st.cache_data(ttl=300, show_spinner="Modellkatalog wird geladen ...")
 def _load_chat_models(api_key: str) -> list:
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key, timeout=REQUEST_TIMEOUT_S)
     return fetch_chat_models(client)
 
 
@@ -108,7 +115,7 @@ st.sidebar.divider()
 st.sidebar.subheader("Verbindungstest")
 st.sidebar.caption("Lädt zuerst den Modellkatalog (prüft den Key), dann ein kurzer Testaufruf an ein kleines Modell daraus.")
 if st.sidebar.button("Verbindung testen", disabled=not nvidia_key):
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S)
     try:
         chat_models = fetch_chat_models(client)  # ungecacht - der Test soll den Key gerade neu prüfen
     except Exception as e:
@@ -173,7 +180,7 @@ else:
     dropdown_options = build_dropdown_options(chat_models)
     choices = [m for m in dropdown_options if m != SEPARATOR]
     st.sidebar.caption(f"{len(choices)} Chat-Modelle geladen - Top 10 zuerst, dann der Rest alphabetisch.")
-    selected = st.sidebar.multiselect("Modelle", choices, default=choices[:5])
+    selected = st.sidebar.multiselect("Modelle", choices, default=[])
 
 # ---------------- Sidebar: RAG ----------------
 st.sidebar.header("RAG (optional)")
@@ -221,15 +228,14 @@ if use_rag and not rag_ready:
 
 # ---------------- Ausführung ----------------
 if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and prompts and nvidia_key)):
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key)
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=REQUEST_TIMEOUT_S)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     tasks = [(m, p) for m in selected for p in prompts]
-    results = []
+    st.session_state.results = []
     progress = st.progress(0.0)
 
     for n, (model_id, prompt) in enumerate(tasks):
-        progress.progress(n / len(tasks), text=f"{model_id} · {prompt['id']}")
-        retrieved = index.retrieve(prompt["text"], 4) if rag_ready else []
+        progress.progress(n / len(tasks), text=f"{n + 1}/{len(tasks)} · {model_id} · {prompt['id']}")
         row = {
             "run_id": run_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -237,10 +243,12 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
             "prompt_id": prompt["id"],
             "technique": prompt["technique"],
             "injected_context": rag_ready,
-            "retrieved_sources": [f"{c.source}#{c.chunk_index}" for c in retrieved],
+            "retrieved_sources": [],
         }
         start = time.perf_counter()
         try:
+            retrieved = index.retrieve(prompt["text"], 4) if rag_ready else []
+            row["retrieved_sources"] = [f"{c.source}#{c.chunk_index}" for c in retrieved]
             resp = client.chat.completions.create(
                 model=model_id,
                 messages=[{"role": "user", "content": build_prompt(prompt["text"], retrieved)}],
@@ -251,15 +259,15 @@ if st.button("▶ Benchmark starten", type="primary", disabled=not (selected and
                 tokens_in=resp.usage.prompt_tokens if resp.usage else None,
                 tokens_out=resp.usage.completion_tokens if resp.usage else None,
             )
-        except Exception as e:  # Fehler (Key, Limit, Modellname) landen als Zeile im Ergebnis
+        except Exception as e:  # API-/Timeout-/sonstiger Fehler: Zeile bleibt sichtbar, Lauf läuft weiter
             row.update(ok=False, response=describe_api_error(e), tokens_in=None, tokens_out=None)
         row["latency_s"] = round(time.perf_counter() - start, 3)
         row["cost_usd"] = estimate_cost_usd(model_id, row["tokens_in"], row["tokens_out"])
-        results.append(row)
+
+        st.session_state.results.append(row)
+        store.save_results([row])  # sofort sichern - ein später abbrechender Lauf verliert nichts Bisheriges
 
     progress.progress(1.0, text="Fertig")
-    st.session_state.results = results
-    store.save_results(results)
 
 # ---------------- Ergebnisse ----------------
 if st.session_state.results:
