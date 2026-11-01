@@ -11,15 +11,51 @@ nur gemockte Clients (kein API-Key vorhanden).
 Dieser Abschnitt wird während der Nacht laufend ergänzt (neueste Einträge oben
 innerhalb des Abschnitts).
 
-### LIVE-TEST OFFEN (Checkliste für morgen)
+### Zusammenfassung (Ende der Nachtschicht)
+
+Alle 9 Punkte der Auftragsliste abgearbeitet, je ein Commit, jeweils Syntax-Check +
+Smoke-Test (meist `streamlit.testing.v1.AppTest`, teils mit gemocktem `openai.OpenAI`,
+da kein echter Key vorhanden war - siehe "Kein API-Key"-Regel). Commits (neueste oben):
+
+- `48c3e1f` docs: README komplett neu (EN Standard + DE), Screenshot-Platzhalter (Schritt 8)
+- `76ffe59` feat: Zweisprachigkeit EN/DE, Englisch als Standard (Schritt 7)
+- `de67211` style: dunkles Theme laut Design-Vorlage (Schritt 6)
+- `55e85ec` feat: RAG über NVIDIA Build reaktivieren (Schritt 5)
+- `7ef3f2f` perf: chromadb lazy importieren, Katalog-Cache auf 1h verlängert (Schritt 4)
+- `1c41e8a` feat: LLM-Pricing-Seite als Dialog, gespeichert in pricing.json (Schritt 3)
+- `0f5f2f7` feat: Verfügbarkeitsprüfung mit persistenter availability.json (Schritt 2)
+- `8fa9b4d` feat: Bewertung (Beste Antwort + Sterne) und Siege pro Modell (Schritt 1)
+- `8523879` fix: vier Bugs aus dem c0660ac-Live-Test (Nachtschicht Schritt 0)
+
+Kein Schritt musste per `git restore` zurückgesetzt werden - alle sind sauber
+durchgelaufen. Secret-Check vor dem Push: `git grep` nach `nvapi-`/API-Key-Literalen/
+`.env` ohne echten Treffer (nur der Platzhaltertext `"nvapi-..."` im Eingabefeld);
+`runs.db`, `rag_store/`, `availability.json` sind weder getrackt noch im Arbeitsbaum
+vorhanden; `pricing.json` existiert lokal gar nicht (bewusst leer gelassen, siehe unten).
+
+### LIVE-TEST OFFEN (Checkliste für morgen, mit echtem Key)
+
+- [ ] **Gesamter Ablauf einmal end-to-end mit echtem Key**: Modell(e) hinzufügen,
+  Benchmark starten, mittendrin **Stop** klicken, Lauf neu starten, Beste Antwort +
+  Sterne vergeben, Timeline/"Siege pro Modell" ansehen, CSV/JSON-Export prüfen.
+- [ ] Schritt 5 (RAG): volle Kette Datei-Upload (echter `st.file_uploader`) →
+  Index aufbauen → Benchmark mit `injected_context=True` → Chunks auf der Karte
+  aufklappen. Nur die Bausteine einzeln getestet (RagIndex add_document/retrieve mit
+  gemocktem Client, Embedding-Modell-Filter, Lazy-Import), nicht der
+  Datei-Upload-Widget-Pfad selbst (in AppTest nicht praktikabel simulierbar).
 - [ ] Schritt 6 (Design): Theme/CSS nur auf Fehlerfreiheit geprüft (App startet,
   kein Streamlit-Theme-Fehler im Log), nicht visuell im Browser verglichen mit
   der Design-Vorlage (Farben/Schriftarten/Abstände) - das geht nur per Augenschein.
-- [ ] Schritt 5 (RAG): volle Kette Datei-Upload (echter st.file_uploader) →
-  Index aufbauen → Benchmark mit injected_context=True → Chunks auf der Karte.
-  Nur die Bausteine einzeln getestet (RagIndex add_document/retrieve mit
-  gemocktem Client, Embedding-Modell-Filter, Lazy-Import), nicht der
-  Datei-Upload-Widget-Pfad selbst (in AppTest nicht praktikabel simulierbar).
+- [ ] Schritt 7 (i18n): beide Sprachen per AppTest durchgespielt (Start, simulierte
+  Ergebniskarte inkl. Badges/Reasoning/RAG-Kontext/entferntem Parameter), aber noch
+  nicht im echten Browser durchgeklickt - v.a. den Umschalter selbst mehrfach hin
+  und her klicken und auf Layout-Sprünge achten.
+- [ ] Schritt 3 (Pricing): eigene Preise eintragen und prüfen, ob "Hinzufügen" sie
+  korrekt vorbefüllt (Logik isoliert getestet, aber nicht über die echte
+  data_editor-Bedienung im Dialog selbst).
+- [ ] Schritt 2 (Verfügbarkeitsprüfung): mit echtem Key laufen lassen und prüfen, ob
+  die Namespace-Annahmen aus `models.py` (Top-10-Familien) weiterhin treffen, da sich
+  der NVIDIA-Build-Katalog seit dem letzten Live-Test schon mehrfach verändert hat.
 
 - Beim Testen der RAG-Reaktivierung (Schritt 5) ist versehentlich ein echter
   `rag_store/`-Ordner (chromadb-Datei) im Projekt-Root entstanden, obwohl der
