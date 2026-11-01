@@ -24,8 +24,10 @@
 - App nicht gestartet – API-Keys gibt der Nutzer selbst ein.
 
 ### Was gemacht (Fortsetzung, 2026-11-01)
-- Initial-Commit erstellt und auf neues, öffentliches GitHub-Repo gepusht
-  (`github.com/Airdinsh-Ai/aiversus`, Remote `origin`).
+- Initial-Commit erstellt (lokale noreply-E-Mail gesetzt, siehe
+  Workspace-Memory "Git noreply-Identität") und auf das bereits bestehende,
+  öffentliche GitHub-Repo `github.com/Airdinsh-Ai/AiVersus` gepusht
+  (Repo war schon angelegt, aber leer; Remote `origin` neu gesetzt).
 
 ### Offen
 - Dokumente im Zip sind mit "Evo V0.3" betitelt, in der ursprünglichen Anfrage war von
