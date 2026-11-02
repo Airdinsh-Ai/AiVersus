@@ -72,10 +72,11 @@
   "sidebar.rag.embed_check_last_checked": "Letzte Prüfung: {timestamp}",
   "sidebar.rag.embed_check_never_checked": "Embedding-Modelle noch nicht geprüft.",
   "sidebar.rag.embed_check_progress": "{done}/{total} geprüft",
-  "sidebar.rag.embed_check_result": "{available} verfügbar, {unavailable} nicht verfügbar, {slow} langsam/unbekannt.",
+  "sidebar.rag.embed_check_result": "{available} verfügbar, {unavailable} nicht verfügbar, {incompatible} inkompatibel, {slow} langsam/unbekannt.",
   "sidebar.rag.embed_hidden_caption": "Nicht verfügbar (ausgeblendet): {models}",
   "sidebar.rag.embed_slow_suffix": " (langsam/unbekannt)",
   "sidebar.rag.embed_404_hint": "{name}: Dieses Embedding-Modell wurde abgelehnt (404) - bitte ein anderes Embedding-Modell wählen.",
+  "sidebar.rag.embed_incompatible_hint": "{name}: Modell nimmt die Anfrage nicht an, anderes Embedding-Modell wählen.",
 
   "sidebar.footer": "NVIDIA Build · Key nur in dieser Sitzung, nirgends gespeichert.",
 

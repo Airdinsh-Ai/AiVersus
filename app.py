@@ -486,17 +486,59 @@ def _check_one_model_task(client, model_id: str):
     return model_id, status, detail
 
 
-def _check_one_embed_model_task(client, model_id: str):
-    """Läuft in einem Worker-Thread - Mini-Embedding-Call, gleiche Klassifikation wie bei
+def _is_incompatible_embed_format(e: Exception) -> bool:
+    """400 beim Embedding-Call heißt "das Modell nimmt unser Anfrageformat nicht an" - anders
 
-    der Chat-Verfügbarkeitsprüfung (404/410 = definitiv nicht verfügbar, alles andere = slow).
+    als 404/410 ("nicht verfügbar") ist das Modell technisch erreichbar, nimmt aber z.B. nur
+    multimodalen statt reinen Text-Input an (siehe _is_vl_embed_model). Live-Test-Befund:
+    nvidia/llama-nemotron-embed-vl-1b-v2 wurde als Standard gewählt und lieferte 400.
+    """
+    return isinstance(e, APIStatusError) and e.status_code == 400
+
+
+def _is_vl_embed_model(model_id: str) -> bool:
+    """Bild-/Video-Embedding-Modelle (Namensteil "-vl-") erwarten multimodalen Input - nie
+
+    automatisch als Standard vorschlagen, auch wenn sie noch nicht als inkompatibel geprüft
+    wurden (siehe _pick_default_embed_model).
+    """
+    return "-vl-" in model_id
+
+
+def _check_one_embed_model_task(client, model_id: str):
+    """Läuft in einem Worker-Thread - Mini-Embedding-Call. Klassifikation: 404/410 =
+
+    definitiv nicht verfügbar, 400 = erreichbar, aber inkompatibles Anfrageformat
+    (z.B. ein Bild-/Video-Embedding-Modell), alles andere = langsam/unbekannt.
     """
     try:
         client.embeddings.create(model=model_id, input=["Hi"])
     except Exception as e:
-        status = "unavailable" if _is_definitively_unavailable(e) else "slow"
+        if _is_definitively_unavailable(e):
+            status = "unavailable"
+        elif _is_incompatible_embed_format(e):
+            status = "incompatible"
+        else:
+            status = "slow"
         return model_id, status, describe_api_error(e)
     return model_id, "available", None
+
+
+def _pick_default_embed_model(choices: list, embed_avail_models: dict, last_successful: str | None) -> str:
+    """Standard: zuletzt erfolgreiches Modell, sonst das erste bestätigt "available" Modell -
+
+    nie eines mit Status slow/unbekannt und nie ein Bild-/Video-Embedding-Modell (siehe
+    _is_vl_embed_model), das lieferte im Live-Test ein 400 statt Embeddings. Fällt ohne
+    besseren Kandidaten auf das erste nicht-vl-Element zurück, zuletzt auf choices[0] -
+    die Auswahlliste darf nie leer sein, eine Streamlit-Selectbox braucht einen Index.
+    """
+    usable = [m for m in choices if not _is_vl_embed_model(m)]
+    if last_successful in usable:
+        return last_successful
+    for m in usable:
+        if embed_avail_models.get(m, {}).get("status") == "available":
+            return m
+    return usable[0] if usable else choices[0]
 
 
 @st.cache_resource
@@ -737,9 +779,13 @@ def _embed_availability_progress_fragment() -> None:
         st.session_state.embedding_availability_data = save_embedding_availability(embed_run["results"])
         n_avail = sum(1 for v in embed_run["results"].values() if v["status"] == "available")
         n_unavail = sum(1 for v in embed_run["results"].values() if v["status"] == "unavailable")
+        n_incompatible = sum(1 for v in embed_run["results"].values() if v["status"] == "incompatible")
         n_slow = sum(1 for v in embed_run["results"].values() if v["status"] == "slow")
         st.session_state.embedding_availability_run = None
-        st.sidebar.success(t("sidebar.rag.embed_check_result", available=n_avail, unavailable=n_unavail, slow=n_slow))
+        st.sidebar.success(t(
+            "sidebar.rag.embed_check_result", available=n_avail, unavailable=n_unavail,
+            incompatible=n_incompatible, slow=n_slow,
+        ))
         st.rerun(scope="app")
 
 
@@ -861,10 +907,13 @@ else:
         if st.session_state.embedding_availability_run is not None:
             _embed_availability_progress_fragment()
 
-        # Nicht erreichbare Embedding-Modelle ausblenden, langsame/unbekannte nur markieren -
-        # exakt dasselbe Muster wie bei den Chat-Modellen oben (hard_unavailable/slow_models).
+        # Nicht erreichbare UND inkompatible Embedding-Modelle ausblenden (beide liefern nie
+        # brauchbare Embeddings), langsame/unbekannte nur markieren - analog zu den
+        # Chat-Modellen oben (hard_unavailable/slow_models), nur mit einer dritten Kategorie.
         embed_avail_models = st.session_state.embedding_availability_data.get("models", {})
-        embed_hard_unavailable = {m for m, info in embed_avail_models.items() if info.get("status") == "unavailable"}
+        embed_hard_unavailable = {
+            m for m, info in embed_avail_models.items() if info.get("status") in ("unavailable", "incompatible")
+        }
         embed_slow = {m for m, info in embed_avail_models.items() if info.get("status") == "slow"}
         embed_choices = [m for m in embedding_models if m not in embed_hard_unavailable] or embedding_models
         embed_hidden = set(embedding_models) & embed_hard_unavailable
@@ -872,7 +921,8 @@ else:
             st.sidebar.caption(t("sidebar.rag.embed_hidden_caption", models=", ".join(sorted(embed_hidden))))
 
         last_successful_embed = st.session_state.last_successful_embed_model
-        default_embed_idx = embed_choices.index(last_successful_embed) if last_successful_embed in embed_choices else 0
+        default_embed_model = _pick_default_embed_model(embed_choices, embed_avail_models, last_successful_embed)
+        default_embed_idx = embed_choices.index(default_embed_model)
         embed_model = st.sidebar.selectbox(
             t("sidebar.rag.embed_model_label"), embed_choices, index=default_embed_idx, key="embed_model_pick",
             format_func=lambda m: f"{m}{t('sidebar.rag.embed_slow_suffix')}" if m in embed_slow else m,
@@ -906,6 +956,14 @@ else:
                                 st.sidebar.error(t("sidebar.rag.embed_404_hint", name=f.name))
                                 embed_avail_models[embed_model] = {
                                     "status": "unavailable", "detail": describe_api_error(e),
+                                }
+                                st.session_state.embedding_availability_data = save_embedding_availability(
+                                    embed_avail_models,
+                                )
+                            elif _is_incompatible_embed_format(e):
+                                st.sidebar.error(t("sidebar.rag.embed_incompatible_hint", name=f.name))
+                                embed_avail_models[embed_model] = {
+                                    "status": "incompatible", "detail": describe_api_error(e),
                                 }
                                 st.session_state.embedding_availability_data = save_embedding_availability(
                                     embed_avail_models,

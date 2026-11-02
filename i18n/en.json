@@ -72,10 +72,11 @@
   "sidebar.rag.embed_check_last_checked": "Last checked: {timestamp}",
   "sidebar.rag.embed_check_never_checked": "Embedding models not checked yet.",
   "sidebar.rag.embed_check_progress": "{done}/{total} checked",
-  "sidebar.rag.embed_check_result": "{available} available, {unavailable} not available, {slow} slow/unknown.",
+  "sidebar.rag.embed_check_result": "{available} available, {unavailable} not available, {incompatible} incompatible, {slow} slow/unknown.",
   "sidebar.rag.embed_hidden_caption": "Not available (hidden): {models}",
   "sidebar.rag.embed_slow_suffix": " (slow/unknown)",
   "sidebar.rag.embed_404_hint": "{name}: this embedding model was rejected (404) - please choose a different embedding model.",
+  "sidebar.rag.embed_incompatible_hint": "{name}: this model doesn't accept the request - choose a different embedding model.",
 
   "sidebar.footer": "NVIDIA Build · Key kept only for this session, never stored.",
 
