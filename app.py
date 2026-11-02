@@ -1285,7 +1285,9 @@ if not known:
     st.caption(t("main.timeline.no_runs_caption"))
 else:
     chosen = st.multiselect(t("main.timeline.models_label"), known, default=known[:3])
-    TIMELINE_METRICS = ["generation_s", "tokens_per_s", "ttft_s", "latency_s", "tokens_out", "tokens_in", "cost_usd"]
+    # tokens_per_s zuerst (= Standard ohne explizites index=) - bessere Modellvergleichs-Metrik
+    # als generation_s, da sie Output-Laenge und Zeit in einer Zahl zusammenfuehrt.
+    TIMELINE_METRICS = ["tokens_per_s", "generation_s", "ttft_s", "latency_s", "tokens_out", "tokens_in", "cost_usd"]
     metric = st.selectbox(
         t("main.timeline.metric_label"), TIMELINE_METRICS,
         format_func=lambda m: t(f"main.timeline.metric.{m}"),
