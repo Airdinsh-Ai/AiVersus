@@ -128,6 +128,20 @@ def _fmt_cost(value) -> str:
     return "–" if value is None else f"${value:.6f}"
 
 
+MIN_GENERATION_S_FOR_TOKPS = 0.05  # unterhalb davon ist tokens_out/generation_s Messrauschen
+
+
+def _tokens_per_s(tokens_out, generation_s):
+    """None (angezeigt als "–") ohne Werte ODER wenn generation_s so kurz ist, dass die
+
+    Division durch Rundung/Scheduling-Ungenauigkeiten dominiert wird statt eine belastbare
+    Tokens/s-Zahl zu ergeben.
+    """
+    if not tokens_out or not generation_s or generation_s < MIN_GENERATION_S_FOR_TOKPS:
+        return None
+    return round(tokens_out / generation_s, 1)
+
+
 _STATUS_COLORS = {  # (Hintergrund, Text) - "ok" bekommt jetzt auch ein Badge, nicht nur Fehler
     "ok": ("#16301C", "#7FD858"), "fehler": ("#3A1F22", "#E85D75"),
     "timeout": ("#3A2A14", "#F2B34A"), "abgebrochen": ("#242830", "#9AA3AE"),
@@ -611,10 +625,7 @@ if st.sidebar.button(t("sidebar.test.button"), disabled=not nvidia_key):
                     "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
                     "reasoning_tokens": result.reasoning_tokens, "ttft_s": result.ttft_s,
                     "generation_s": result.generation_s,
-                    "tokens_per_s": (
-                        round(result.tokens_out / result.generation_s, 1)
-                        if result.tokens_out and result.generation_s else None
-                    ),
+                    "tokens_per_s": _tokens_per_s(result.tokens_out, result.generation_s),
                     "cost_usd": None, "finish_reason": result.finish_reason, "outcome": "ok",
                     "sent_params": test_sent_params, "injected_context": False, "retrieved_sources": [],
                     "is_best": False, "stars": None, "prompt_text": t("sidebar.test.prompt"),
@@ -1195,10 +1206,7 @@ def _build_result_row(
         flush=True,
     )
     row["latency_s"] = duration
-    row["tokens_per_s"] = (
-        round(row["tokens_out"] / row["generation_s"], 1)
-        if row.get("tokens_out") and row.get("generation_s") else None
-    )
+    row["tokens_per_s"] = _tokens_per_s(row.get("tokens_out"), row.get("generation_s"))
     row["cost_usd"] = _cost_usd(model_id, row["tokens_in"], row["tokens_out"])
     return row
 
