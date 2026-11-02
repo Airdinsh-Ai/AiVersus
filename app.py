@@ -1315,7 +1315,10 @@ else:
                 alt.Chart(melted)
                 .mark_line(point=True)
                 .encode(
-                    x="timestamp:T",
+                    # Wenige, lesbare Ticks statt einem Label pro Minute (Default von Altair
+                    # bei dicht beieinander liegenden Zeitstempeln) - ca. 6 reichen, um den
+                    # Zeitraum einzuordnen, ohne dass sich die Achse überlappt.
+                    x=alt.X("timestamp:T", axis=alt.Axis(format="%d.%m. %H:%M", tickCount=6)),
                     y=alt.Y(f"{metric}:Q", scale=alt.Scale(domain=[0, y_max * 1.1 if y_max > 0 else 1])),
                     color="model_id:N",
                 )
