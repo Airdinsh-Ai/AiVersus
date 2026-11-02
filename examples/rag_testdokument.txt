@@ -1,0 +1,16 @@
+Mitarbeiterhandbuch der Nordlicht Werkzeugbau GmbH (erfundenes Testdokument)
+
+1. Allgemeines
+Die Nordlicht Werkzeugbau GmbH ist ein fiktiver Betrieb mit 142 Beschäftigten. Dieses Handbuch dient ausschließlich als Testdokument für die Retrieval-Funktion einer Software. Alle Namen, Zahlen und Regeln in diesem Text sind frei erfunden und kommen in keinem Sprachmodell als Trainingswissen vor. Die Geschäftsführung legt Wert auf kurze Wege, klare Absprachen und pünktliche Lieferungen an die Kundschaft. Neue Beschäftigte erhalten in der ersten Woche eine Einweisung in die Werkhallen, die Büroräume und die Sicherheitsregeln des Betriebs. Die Einweisung dauert in der Regel drei Arbeitstage und wird von der Personalabteilung organisiert.
+
+2. Urlaub und Abwesenheit
+Urlaubsanträge müssen bis zum 14. des Vormonats bei der Personalabteilung eingereicht werden. Anträge, die später eingehen, werden nur bei dringendem Bedarf und nach Rücksprache mit der Abteilungsleitung bearbeitet. Krankmeldungen sind spätestens um 8:30 Uhr am ersten Krankheitstag telefonisch zu melden. Eine ärztliche Bescheinigung ist ab dem dritten Kalendertag vorzulegen. Wer kurzfristig frei braucht, spricht zuerst mit der Schichtleitung und trägt die Abwesenheit danach im Kalender ein.
+
+3. Gebäude und Technik
+Der Hausmeister der Nordlicht Werkzeugbau GmbH heißt Bernd Quaschning und ist montags bis donnerstags von 6:00 bis 14:30 Uhr erreichbar. Defekte Lampen, klemmende Türen und Störungen der Heizung werden über das Ticketsystem unter der Rubrik Haustechnik gemeldet. Die Kaffeemaschine im dritten Stock trägt die Inventarnummer KM-7731 und wird jeden Mittwoch entkalkt. Der Serverraum im Keller darf nur mit einer Zutrittskarte der Stufe B betreten werden. Fahrräder werden im Schuppen neben der Pforte abgestellt, nicht im Treppenhaus.
+
+4. Sicherheit und Notfälle
+Im Alarmfall verlassen alle Beschäftigten das Gebäude über den nächstgelegenen Ausgang. Der Notfall-Treffpunkt ist der Parkplatz hinter Halle 4. Dort zählt die Schichtleitung die anwesenden Personen anhand der Namensliste durch. Der Brandschutzbeauftragte ist Frau Ilse Tannenberg, ihre Durchwahl lautet 4417. Ersthelferinnen und Ersthelfer sind an den grünen Kreuzen neben den Türen der Werkhallen zu erkennen. Der Erste-Hilfe-Raum befindet sich im Erdgeschoss neben der Pforte.
+
+5. Verpflegung
+Die Kantine bleibt freitags geschlossen. Stattdessen erhalten alle Beschäftigten am Freitag einen Lieferdienst-Gutschein über 7,50 Euro, der im Büro der Personalabteilung abgeholt wird. An den übrigen Wochentagen öffnet die Kantine von 11:15 bis 13:45 Uhr. Das Tagesgericht kostet 4,20 Euro, die Suppe 1,80 Euro. Getränke aus dem Automaten im Eingangsbereich sind für Beschäftigte kostenlos.

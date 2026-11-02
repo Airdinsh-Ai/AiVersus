@@ -1,62 +1,91 @@
 # AiVersus
 
-AiVersus ist ein Open-Source-Tool, um große Sprachmodelle nebeneinander zu vergleichen.
-Füge beliebig viele Modelle von [NVIDIA Build](https://build.nvidia.com) hinzu, lass
-dieselben Prompts parallel gegen alle laufen und vergleiche Antworten, Zeiten, Tokens und
-Kosten - optional mit eigenen Dokumenten als RAG-Kontext. Läuft lokal im Browser.
+AiVersus lässt dieselben Prompts parallel gegen beliebig viele [NVIDIA Build](https://build.nvidia.com)-Modelle laufen und vergleicht Antworten, Zeiten, Tokens und Kosten - optional mit eigenen Dokumenten als RAG-Kontext.
 
 *(🇬🇧 English version: [README.md](README.md))*
 
-![AiVersus Screenshot-Platzhalter](docs/screenshots/overview.png)
+![AiVersus Übersicht](docs/screenshots/overview.png)
 
 ## Funktionen
 
 - **Beliebig viele Modelle nebeneinander** - im Live-Katalog von NVIDIA Build suchen,
   so viele Modelle wie gewünscht hinzufügen und wieder entfernen; jedes bekommt eine
   feste Farbe.
-- **Parallele Benchmark-Läufe** mit Live-Statuszeile pro Modell/Prompt (Warteschlange,
-  generiert, fertig, Fehler, Timeout, abgebrochen) und einem **Stop**-Button, der sauber
-  abbricht - fertige Antworten bleiben erhalten, nichts bereits Gespeichertes geht verloren.
+- **Parallele Benchmark-Läufe** gegen dieselben Prompts, mit Live-Statuszeile pro
+  Modell/Prompt (Warteschlange, generiert, fertig, Fehler, Timeout, abgebrochen) und einem
+  **Stop**-Button, der sauber abbricht - fertige Antworten bleiben erhalten, nichts bereits
+  Gespeichertes geht verloren.
 - **Metriken pro Antwort**: Zeit bis zum ersten Token (TTFT, inkl. NVIDIA-Warteschlange),
-  reine Generierungszeit, Input-/Output-Tokens, Reasoning-Tokens (bei Reasoning-Modellen),
-  Tokens pro Sekunde und Kosten - plus die tatsächlich gesendeten Parameter (lehnt ein
-  Modell einen Parameter ab, z.B. `seed`, wird einmal ohne ihn wiederholt, sichtbar markiert).
+  reine Generierungszeit, Input-/Output-Tokens und Tokens pro Sekunde - plus die
+  tatsächlich gesendeten Parameter (lehnt ein Modell einen Parameter ab, z.B. `seed`, wird
+  einmal ohne ihn wiederholt, sichtbar markiert).
+- **Reasoning-Anzeige**: Modelle, die eine eigene Denkspur zurückgeben, zeigen sie in
+  einem eigenen, aufklappbaren Bereich auf der Karte, getrennt von der eigentlichen Antwort.
+- **Kosten nach selbst eingetragenen Preisen**: Input-/Output-Preis pro Modell eintragen
+  (oder als kostenlos markieren); ohne Preis zeigt die Karte unbekannte Kosten, nie
+  stillschweigend $0.
 - **Bewertung**: pro Prompt die beste Antwort markieren und 1-5 Sterne pro Antwort vergeben;
   beides wird mit dem Lauf gespeichert.
-- **Timeline**: jeder Lauf wird lokal gespeichert (`runs.db`); Latenz, Tokens oder Kosten
+- **Timeline über Läufe**: jeder Lauf wird lokal gespeichert; Latenz, Tokens oder Kosten
   über mehrere Modelle und Läufe vergleichen, plus ein "Siege pro Modell"-Diagramm aus
   deinen Bewertungen.
-- **Verfügbarkeitsprüfung**: ein Klick schickt einen Mini-Call an jedes Katalog-Modell und
-  zeigt, welche für deinen Account aktuell tatsächlich erreichbar sind (gespeichert in
-  `availability.json`).
-- **LLM-Pricing-Tabelle**: deine eigene, editierbare Preisliste (`pricing.json`) - nur
-  Preise, die du auf einer offiziellen Anbieter-Seite verifizieren kannst, mit Quelle und
-  Datum; unbekannt bleibt unbekannt, nie stillschweigend "kostenlos".
 - **RAG (optional)**: PDF/TXT/MD-Dokumente hochladen, lokaler Index (ChromaDB), Embeddings
   laufen ebenfalls über NVIDIA Build - kein zweiter Anbieter nötig.
+- **Export** der Ergebnisse als CSV oder JSON.
 - **Englische oder deutsche Oberfläche**, Englisch als Standard, umschaltbar in der Sidebar.
-- **Dein API-Key verlässt nie deine Browser-Sitzung** - nicht geloggt, nicht auf Festplatte
-  gespeichert, in keinem Export enthalten.
 
-## Installation
+## Screenshots
 
-Benötigt [uv](https://docs.astral.sh/uv/) und Python 3.11+.
+![AiVersus laufender Benchmark](docs/screenshots/run-progress.png)
+*`run-progress.png` - ein laufender Benchmark: Live-Status pro Modell/Prompt.*
+
+![AiVersus Ergebniskarten](docs/screenshots/result-cards.png)
+*`result-cards.png` - Ergebniskarten eines Prompts, Antworten aufgeklappt.*
+
+![AiVersus Reasoning](docs/screenshots/reasoning.png)
+*`reasoning.png` - die Denkspur eines Reasoning-Modells, getrennt von seiner Antwort.*
+
+![AiVersus Ergebnistabelle](docs/screenshots/results-table.png)
+*`results-table.png` - alle Ergebnisse eines Laufs als sortierbare Tabelle.*
+
+![AiVersus Timeline](docs/screenshots/timeline.png)
+*`timeline.png` - der Timeline-Abschnitt: ein Metrik-Chart über mehrere Läufe plus das
+"Siege pro Modell"-Diagramm.*
+
+![AiVersus Pricing-Dialog](docs/screenshots/pricing-dialog.png)
+*`pricing-dialog.png` - die editierbare Preisliste, mit Quelle und Datum pro Modell.*
+
+![AiVersus RAG](docs/screenshots/rag.png)
+*`rag.png` - die RAG-Sidebar (Embedding-Modell-Prüfung, Indexaufbau) und eine
+Ergebniskarte mit aufgeklappten abgerufenen Chunks.*
+
+## Schnellstart
+
+Benötigt [uv](https://docs.astral.sh/uv/) - installiert die in
+[`.python-version`](.python-version) festgelegte Python-Version (aktuell 3.14) automatisch,
+keine separate Python-Installation nötig.
 
 ```bash
+git clone https://github.com/Airdinsh-Ai/AiVersus.git
+cd AiVersus
 uv sync
-```
-
-## Start
-
-```bash
 uv run streamlit run app.py
 ```
 
-Trage deinen NVIDIA-Build-API-Key in der Sidebar ein (kostenlos erhältlich auf
-[build.nvidia.com](https://build.nvidia.com) - das Freikontingent ist großzügig, aber
-**rechne bei stark genutzten Modellen mit einer Warteschlange von bis zu mehreren Minuten**
-vor dem ersten Token; die App ist darauf mit einem langen Standard-Timeout eingestellt,
-der sich in der Sidebar anpassen lässt).
+Die vom Terminal ausgegebene lokale Adresse öffnen (Standard `http://localhost:8501`),
+dann den NVIDIA-Build-API-Key in der Sidebar eintragen - wie man einen kostenlos bekommt,
+steht im nächsten Abschnitt.
+
+## NVIDIA-API-Key (kostenlos)
+
+1. <https://build.nvidia.com/> öffnen und anmelden oder ein kostenloses NVIDIA-Konto anlegen.
+2. Im Konto den Bereich für API-Keys öffnen ("Get API Key" auf der Seite) und einen Key
+   erzeugen. Er beginnt mit `nvapi-` und wird nur einmal angezeigt.
+3. In der AiVersus-Seitenleiste einfügen. Der Key bleibt nur in der Sitzung und wird nie
+   gespeichert, geloggt oder exportiert.
+
+Bedingungen und Limits des Free Tiers legt NVIDIA fest und ändert sie gelegentlich;
+Wartezeiten können lang sein. Aktuelles auf <https://build.nvidia.com/>.
 
 ## Nutzung
 
@@ -78,39 +107,71 @@ der sich in der Sidebar anpassen lässt).
 
 ## RAG (optional)
 
-"RAG-Kontext verwenden" in der Sidebar aktivieren, ein Embedding-Modell aus dem Live-Katalog
-wählen, Dokumente hochladen (PDF, TXT, MD) und den Index aufbauen. Die relevantesten
-Abschnitte werden einmal pro Prompt (nicht einmal pro Modell) abgerufen und als Kontext
-mitgegeben; jede Ergebniskarte zeigt, ob Kontext injiziert wurde und welche Abschnitte
-verwendet wurden. Der Index liegt lokal in `rag_store/`.
+1. "RAG-Kontext verwenden" in der Sidebar aktivieren.
+2. Zuerst "Embedding-Modelle prüfen" klicken - nicht jedes Embedding-Modell im Katalog ist
+   für jeden Account erreichbar, die Prüfung blendet die nicht erreichbaren aus.
+3. Dokumente hochladen (PDF, TXT, MD) und "Index aufbauen" klicken.
 
-## Screenshots
+Die relevantesten Abschnitte werden einmal pro Prompt (nicht einmal pro Modell) abgerufen
+und als Kontext mitgegeben; jede Ergebniskarte zeigt, ob Kontext injiziert wurde und den
+Text der abgerufenen Abschnitte. Der Index liegt lokal in `rag_store/`.
 
-![AiVersus Übersicht](docs/screenshots/overview.png)
-*`overview.png` - die Hauptansicht: ein paar hinzugefügte Modelle, ein fertiger
-Benchmark-Lauf mit Ergebniskarten.*
+Zum Ausprobieren ohne eigene Dokumente eignet sich
+[`examples/rag_testdokument.txt`](examples/rag_testdokument.txt) - ein kurzes, komplett
+erfundenes Mitarbeiterhandbuch, gezielt zum Testen der Retrieval-Funktion geschrieben (die
+Fakten darin können in keinem Modell als Trainingswissen vorkommen). Beispiel-Prompts dafür:
 
-![AiVersus RAG](docs/screenshots/rag.png)
-*`rag.png` - die RAG-Sidebar (Embedding-Modell-Prüfung, Indexaufbau) und eine
-Ergebniskarte mit aufgeklappten abgerufenen Chunks.*
+- "Bis wann müssen Urlaubsanträge eingereicht werden?"
+- "Wie heißt der Hausmeister und wann ist er erreichbar?"
+- "Wo ist der Notfall-Treffpunkt im Alarmfall?"
+- "Welche Inventarnummer hat die Kaffeemaschine im dritten Stock?"
 
-![AiVersus Timeline](docs/screenshots/timeline.png)
-*`timeline.png` - der Timeline-Abschnitt: ein Metrik-Chart über mehrere Läufe plus das
-"Siege pro Modell"-Diagramm.*
+## Daten und Datenschutz
 
-## Datenschutz
+Alles Dauerhafte - `runs.db`, `rag_store/`, `availability.json`,
+`embedding_availability.json`, `settings.json`, `pricing.json` - liegt lokal unter `data/`
+und ist nicht Teil des Repos (`data/` ist gitignored). Dein API-Key liegt nur im Speicher
+der Browser-Sitzung, solange die App offen ist; er wird nie auf die Festplatte geschrieben,
+nie geloggt und erscheint in keinem Export (CSV/JSON) und nicht in `runs.db`.
 
-Dein API-Key liegt nur im Speicher der Browser-Sitzung, solange die App offen ist. Er wird
-nie auf die Festplatte geschrieben, nie geloggt und erscheint in keinem Export (CSV/JSON)
-und nicht in `runs.db`.
+Zwei Umgebungsvariablen legen fest, wo diese Daten liegen und welche API angesprochen wird -
+vor allem fürs Testen gedacht, damit ein Testlauf nie das echte `data/` berührt:
 
-## Projektdateien
+- `AIVERSUS_DATA_DIR` - überschreibt den `data/`-Ordner.
+- `AIVERSUS_BASE_URL` - überschreibt die Basis-URL der NVIDIA-Build-API.
 
-- `runs.db`, `rag_store/`, `availability.json` - lokaler, nutzerspezifischer Zustand, nicht
-  eingecheckt.
-- `pricing.json` - deine eigene, quellenbelegte Preisliste; wird eingecheckt, da es sich um
-  Referenzdaten handelt, die mit dem Projekt mitgeliefert werden sollen (enthält aber nur
-  selbst verifizierte Preise).
+## Ehrliche Grenzen
+
+- Die Warteschlange eines stark genutzten Modells zählt zur TTFT - eine langsame Antwort
+  heißt nicht automatisch ein langsames Modell.
+- Kosten werden ausschließlich aus selbst eingetragenen Preisen berechnet (mit explizitem
+  "kostenlos"-Haken); eine offizielle NVIDIA-Build-Preisliste zum Vorbefüllen war nicht
+  auffindbar, daher zeigt ein Modell ohne Preis unbekannte Kosten statt einer Schätzung.
+- Reasoning-Tokens zählen zu den Output-Tokens und werden nicht von jedem Modell separat
+  ausgewiesen - manche melden sie, manche nicht.
+- Bei `temperature` über 0 sind Antworten nicht deterministisch, auch nicht bei identischem
+  Prompt.
+
+## Projektstruktur
+
+- `app.py` - die Streamlit-App (UI, Benchmark-Ausführung, Sidebar).
+- `chat_client.py` - Streaming-Chat-Aufrufe, Timeouts, Parameter-Retry-Logik.
+- `models.py`, `rag.py`, `storage.py`, `i18n.py` - Modellkatalog, RAG-Index,
+  Lauf-Speicherung, Übersetzungen.
+- `i18n/` - die Übersetzungsdateien `de.json`/`en.json`.
+- `.streamlit/config.toml` - das dunkle Theme.
+- `scripts/` - eigenständige Prüf-/Migrationsskripte (keine Testsuite).
+- `docs/` - Architektur, Backlog und weitere Projektdokumente (siehe unten).
+- `data/` - lokaler, nutzerspezifischer Zustand (gitignored, nicht im Repo).
+
+## Dokumentation
+
+Architektur, Backlog und Entscheidungshistorie liegen unter
+[`docs/projekt/dokumente/`](docs/projekt/dokumente).
+
+## Lizenz
+
+MIT - siehe [LICENSE](LICENSE).
 
 ---
 
