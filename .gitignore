@@ -1,6 +1,4 @@
-runs.db
-rag_store/
+data/
 __pycache__/
 .venv/
 .env
-availability.json

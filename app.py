@@ -55,7 +55,6 @@ from rag import RagIndex, build_prompt
 from storage import RunStore
 
 st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
-store = RunStore()
 
 DEBUG = os.environ.get("AIVERSUS_DEBUG") == "1"
 if DEBUG:
@@ -85,9 +84,18 @@ t = make_translator(st.session_state.lang)
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierungs-Warteschlange
 MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
-AVAILABILITY_PATH = "availability.json"
+
+# Alle persistenten Daten (runs.db, availability.json, pricing.json, rag_store/) laufen über
+# diese EINE Konstante - mit AIVERSUS_DATA_DIR überschreibbar. Tests/Mock-Läufe setzen das auf
+# ein Temp-Verzeichnis und berühren so nie die echten Projektdaten (siehe CLAUDE.md).
+DATA_DIR = os.environ.get("AIVERSUS_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+AVAILABILITY_PATH = os.path.join(DATA_DIR, "availability.json")
 AVAILABILITY_CHECK_TIMEOUT_S = 20.0  # kurzes Zeitfenster pro Modell - reicht für den Mini-Call
-PRICING_JSON_PATH = "pricing.json"
+PRICING_JSON_PATH = os.path.join(DATA_DIR, "pricing.json")
+
+store = RunStore(db_path=os.path.join(DATA_DIR, "runs.db"))
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", t("main.prompts.other_technique")]
 MODEL_COLOR_PALETTE = [
     "#6CA8FF", "#F59E4C", "#4CC9B0", "#D97757", "#9B8AFB",
@@ -260,7 +268,10 @@ def _check_one_model_task(client, model_id: str):
 
 @st.cache_resource
 def get_index(api_key: str, embed_model: str) -> RagIndex:
-    return RagIndex(api_key=api_key, base_url=NVIDIA_BASE_URL, embed_model=embed_model)
+    return RagIndex(
+        api_key=api_key, base_url=NVIDIA_BASE_URL, embed_model=embed_model,
+        persist_dir=os.path.join(DATA_DIR, "rag_store"),
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner="Modellkatalog wird geladen ...")
