@@ -1471,7 +1471,7 @@ known = store.known_models()
 if not known:
     st.caption(t("main.timeline.no_runs_caption"))
 else:
-    chosen = st.multiselect(t("main.timeline.models_label"), known, default=known[:3])
+    chosen = st.multiselect(t("main.timeline.models_label"), known, default=known[:6])
     # tokens_per_s zuerst (= Standard ohne explizites index=) - bessere Modellvergleichs-Metrik
     # als generation_s, da sie Output-Laenge und Zeit in einer Zahl zusammenfuehrt.
     TIMELINE_METRICS = ["tokens_per_s", "generation_s", "ttft_s", "latency_s", "tokens_out", "tokens_in", "cost_usd"]
@@ -1516,6 +1516,10 @@ else:
                 st.caption(t("main.timeline.mixed_params_caption", models=", ".join(mixed_models)))
 
             y_max = float(hist[metric].max())
+            # Expliziter domain + nice=False statt Vega-Lites automatischem Runden auf
+            # "hübsche" Zeitgrenzen (z.B. volle Stunden) - sonst reicht die x-Achse links/
+            # rechts über den tatsächlichen Zeitraum der gewählten Läufe hinaus.
+            x_domain = [hist["timestamp"].min(), hist["timestamp"].max()]
             st.altair_chart(
                 alt.Chart(hist)
                 .mark_line(point=True)
@@ -1523,7 +1527,10 @@ else:
                     # Wenige, lesbare Ticks statt einem Label pro Minute (Default von Altair
                     # bei dicht beieinander liegenden Zeitstempeln) - ca. 6 reichen, um den
                     # Zeitraum einzuordnen, ohne dass sich die Achse überlappt.
-                    x=alt.X("timestamp:T", axis=alt.Axis(format="%d.%m. %H:%M", tickCount=6)),
+                    x=alt.X(
+                        "timestamp:T", axis=alt.Axis(format="%d.%m. %H:%M", tickCount=6),
+                        scale=alt.Scale(domain=x_domain, nice=False),
+                    ),
                     y=alt.Y(f"{metric}:Q", scale=alt.Scale(domain=[0, y_max * 1.1 if y_max > 0 else 1])),
                     color="model_id:N",
                     detail="series_key:N",
