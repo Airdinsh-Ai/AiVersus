@@ -130,6 +130,7 @@
   "main.card.param_not_set": "not set",
   "main.card.param_dropped_suffix": " (without '{param}', rejected by NVIDIA Build)",
   "main.card.rag_summary": "RAG context ({count} chunks)",
+  "main.card.rag_chunk_toggle": "Show chunk text",
   "main.card.show_answer_toggle": "Show answer",
   "main.card.parameters_expander": "Parameters",
   "main.card.prompt_label": "Prompt",

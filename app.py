@@ -208,8 +208,13 @@ def _render_card(container, row: dict, card_key: str) -> None:
         if row.get("injected_context"):
             rag_label = t("main.card.rag_summary", count=len(row.get("retrieved_sources", [])))
             with st.expander(rag_label, key=f"rag_{card_key}"):
-                for source in row.get("retrieved_sources", []):
-                    st.markdown(f"- {source}")
+                # st.expander lässt sich nicht verschachteln (siehe Docstring oben) - der
+                # Chunk-Text selbst daher pro Chunk über denselben Toggle wie "Antwort zeigen",
+                # nicht über einen zweiten Expander, und standardmäßig eingeklappt (Toggle aus).
+                for i, chunk in enumerate(row.get("retrieved_chunks") or []):
+                    st.markdown(f"- {chunk['source']}#{chunk['chunk_index']}")
+                    if st.toggle(t("main.card.rag_chunk_toggle"), key=f"rag_chunk_{card_key}_{i}"):
+                        st.code(chunk["text"])
 
         with st.expander(t("main.card.parameters_expander"), key=f"params_{card_key}"):
             params_line = (
@@ -1150,6 +1155,9 @@ def _build_result_row(
         "technique": prompt["technique"],
         "injected_context": bool(retrieved_chunks),
         "retrieved_sources": [f"{c.source}#{c.chunk_index}" for c in retrieved_chunks],
+        "retrieved_chunks": [
+            {"source": c.source, "chunk_index": c.chunk_index, "text": c.text} for c in retrieved_chunks
+        ],
         "sent_params": _actual_sent_params(result),
         "stars": None,
         "is_best": False,
