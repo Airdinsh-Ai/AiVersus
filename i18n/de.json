@@ -33,6 +33,7 @@
   "sidebar.test.finish_reason_label": "**finish_reason:**",
 
   "common.reasoning": "Reasoning",
+  "common.unknown_prompt": "(unbekannter Prompt)",
 
   "sidebar.availability.header": "Verfügbarkeit",
   "sidebar.availability.last_checked": "Letzte Prüfung: {timestamp}",

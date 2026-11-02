@@ -808,6 +808,7 @@ def _build_result_row(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_id": model_id,
         "prompt_id": prompt["id"],
+        "prompt_text": prompt["text"],
         "technique": prompt["technique"],
         "injected_context": bool(retrieved_chunks),
         "retrieved_sources": [f"{c.source}#{c.chunk_index}" for c in retrieved_chunks],
@@ -1036,6 +1037,10 @@ def _render_result_card(row: dict) -> str:
         status_html += f"<span style='{pill}background:#2A2314;color:#F2B34A;font-weight:600;'>{t('main.card.best_badge')}</span><br>"
     if row.get("stars"):
         status_html += f"<div style='color:#F2B34A;margin-bottom:6px;'>{'★' * row['stars']}{'☆' * (5 - row['stars'])}</div>"
+    prompt_text_html = (
+        f"<div style=\"font-size:12px;color:#7D8691;margin-bottom:6px;\">"
+        f"{html.escape(row.get('prompt_text') or t('common.unknown_prompt'))}</div>"
+    )
     reasoning_html = ""
     if row.get("reasoning"):
         reasoning_html = (
@@ -1059,6 +1064,7 @@ def _render_result_card(row: dict) -> str:
         f"<strong>{html.escape(row['model_id'])}</strong>"
         "</div>"
         f"{status_html}"
+        f"{prompt_text_html}"
         f"<div style=\"font-size:13px;color:#9AA3AE;margin-bottom:8px;"
         f"font-family:'IBM Plex Mono',monospace;\">{metrics}</div>"
         f"<div style=\"white-space:pre-wrap;font-size:14px;\">{html.escape(row['response'] or '')}</div>"

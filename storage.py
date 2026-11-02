@@ -44,6 +44,7 @@ MIGRATIONS = [
     ("sent_params", "TEXT"),
     ("stars", "INTEGER"),  # 1-5, NULL = nicht bewertet
     ("is_best", "INTEGER"),  # 1 = "Beste Antwort" für diesen Prompt in diesem Lauf, sonst 0/NULL
+    ("prompt_text", "TEXT"),  # Wortlaut des Prompts zum Zeitpunkt des Laufs - NULL bei älteren Zeilen
 ]
 
 
@@ -67,13 +68,13 @@ class RunStore:
                 json.dumps(r.get("retrieved_sources", []), ensure_ascii=False),
                 r.get("ttft_s"), r.get("generation_s"), r.get("tokens_per_s"), r.get("reasoning_tokens"),
                 json.dumps(r.get("sent_params"), ensure_ascii=False) if r.get("sent_params") is not None else None,
-                r.get("stars"), 1 if r.get("is_best") else 0,
+                r.get("stars"), 1 if r.get("is_best") else 0, r.get("prompt_text"),
             )
             for r in results
         ]
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
-                "INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
+                "INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
             )
         return len(rows)
 
