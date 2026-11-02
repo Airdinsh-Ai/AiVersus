@@ -92,6 +92,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 AVAILABILITY_PATH = os.path.join(DATA_DIR, "availability.json")
 AVAILABILITY_CHECK_TIMEOUT_S = 20.0  # kurzes Zeitfenster pro Modell - reicht für den Mini-Call
+EMBED_AVAILABILITY_PATH = os.path.join(DATA_DIR, "embedding_availability.json")
+EMBED_CHECK_TIMEOUT_S = 20.0  # gleiches kurzes Zeitfenster wie bei der Chat-Verfügbarkeitsprüfung
 PRICING_JSON_PATH = os.path.join(DATA_DIR, "pricing.json")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
@@ -255,6 +257,28 @@ def save_availability(models: dict) -> dict:
     return data
 
 
+def load_embedding_availability() -> dict:
+    """Gleiches Format wie load_availability(), eigene Datei - Embedding- und Chat-Modelle
+
+    teilen sich keinen Namensraum und werden unabhängig voneinander geprüft.
+    """
+    if not os.path.exists(EMBED_AVAILABILITY_PATH):
+        return {"checked_at": None, "models": {}}
+    try:
+        with open(EMBED_AVAILABILITY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {"checked_at": data.get("checked_at"), "models": data.get("models", {})}
+    except (OSError, json.JSONDecodeError):
+        return {"checked_at": None, "models": {}}
+
+
+def save_embedding_availability(models: dict) -> dict:
+    data = {"checked_at": datetime.now(timezone.utc).isoformat(), "models": models}
+    with open(EMBED_AVAILABILITY_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return data
+
+
 def load_pricing_file() -> dict:
     """{model_id: {"input", "output", "source", "updated"}} - nur Preise mit Quelle+Datum, die
 
@@ -276,7 +300,10 @@ def save_pricing_file(models: dict) -> None:
 
 
 def load_settings() -> dict:
-    """{"prompts", "selected_models", "model_prices"} - nie API-Keys, die bleiben nur im Session-State."""
+    """{"prompts", "selected_models", "model_prices", "last_successful_embed_model"} - nie
+
+    API-Keys, die bleiben nur im Session-State.
+    """
     if not os.path.exists(SETTINGS_PATH):
         return {}
     try:
@@ -291,6 +318,7 @@ def save_settings() -> None:
         "prompts": st.session_state.prompts,
         "selected_models": st.session_state.selected_models,
         "model_prices": st.session_state.model_prices,
+        "last_successful_embed_model": st.session_state.last_successful_embed_model,
     }
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -345,6 +373,12 @@ if "availability_run" not in st.session_state:
     st.session_state.availability_run = None
 if "pricing_data" not in st.session_state:
     st.session_state.pricing_data = load_pricing_file()
+if "embedding_availability_data" not in st.session_state:
+    st.session_state.embedding_availability_data = load_embedding_availability()
+if "embedding_availability_run" not in st.session_state:
+    st.session_state.embedding_availability_run = None
+if "last_successful_embed_model" not in st.session_state:
+    st.session_state.last_successful_embed_model = _saved_settings.get("last_successful_embed_model")
 
 
 def _original_message(e: Exception) -> str:
@@ -433,6 +467,19 @@ def _check_one_model_task(client, model_id: str):
     status = _classify_availability(result)
     detail = None if result.ok else describe_api_error(result.error)
     return model_id, status, detail
+
+
+def _check_one_embed_model_task(client, model_id: str):
+    """Läuft in einem Worker-Thread - Mini-Embedding-Call, gleiche Klassifikation wie bei
+
+    der Chat-Verfügbarkeitsprüfung (404/410 = definitiv nicht verfügbar, alles andere = slow).
+    """
+    try:
+        client.embeddings.create(model=model_id, input=["Hi"])
+    except Exception as e:
+        status = "unavailable" if _is_definitively_unavailable(e) else "slow"
+        return model_id, status, describe_api_error(e)
+    return model_id, "available", None
 
 
 @st.cache_resource
@@ -652,6 +699,36 @@ def _availability_progress_fragment() -> None:
 if st.session_state.availability_run is not None:
     _availability_progress_fragment()
 
+
+@st.fragment(run_every=0.5)
+def _embed_availability_progress_fragment() -> None:
+    """Wie _availability_progress_fragment(), für die Embedding-Modell-Mini-Calls (RAG)."""
+    embed_run = st.session_state.embedding_availability_run
+    for future in [f for f in embed_run["pending"] if f.done()]:
+        embed_run["pending"].discard(future)
+        model_id = embed_run["futures"][future]
+        try:
+            _, status, detail = future.result()
+        except Exception as e:
+            status, detail = "slow", str(e)
+        embed_run["results"][model_id] = {"status": status, "detail": detail}
+        embed_run["done_count"] += 1
+
+    st.sidebar.progress(
+        embed_run["done_count"] / embed_run["total"],
+        text=t("sidebar.rag.embed_check_progress", done=embed_run["done_count"], total=embed_run["total"]),
+    )
+    if not embed_run["pending"]:
+        embed_run["executor"].shutdown(wait=False)
+        st.session_state.embedding_availability_data = save_embedding_availability(embed_run["results"])
+        n_avail = sum(1 for v in embed_run["results"].values() if v["status"] == "available")
+        n_unavail = sum(1 for v in embed_run["results"].values() if v["status"] == "unavailable")
+        n_slow = sum(1 for v in embed_run["results"].values() if v["status"] == "slow")
+        st.session_state.embedding_availability_run = None
+        st.sidebar.success(t("sidebar.rag.embed_check_result", available=n_avail, unavailable=n_unavail, slow=n_slow))
+        st.rerun(scope="app")
+
+
 # ---------------- Sidebar: LLM Pricing ----------------
 st.sidebar.divider()
 
@@ -745,7 +822,47 @@ else:
     if not embedding_models:
         st.sidebar.warning(t("sidebar.rag.no_embed_model"))
     else:
-        embed_model = st.sidebar.selectbox(t("sidebar.rag.embed_model_label"), embedding_models, key="embed_model_pick")
+        embed_availability_run_active = st.session_state.embedding_availability_run is not None
+        embed_last_checked = st.session_state.embedding_availability_data.get("checked_at")
+        st.sidebar.caption(
+            t("sidebar.rag.embed_check_last_checked", timestamp=embed_last_checked)
+            if embed_last_checked else t("sidebar.rag.embed_check_never_checked")
+        )
+        if st.sidebar.button(
+            t("sidebar.rag.embed_check_button"), disabled=embed_availability_run_active,
+            help=t("sidebar.rag.embed_check_help"),
+        ):
+            embed_client = OpenAI(
+                base_url=NVIDIA_BASE_URL, api_key=nvidia_key, timeout=EMBED_CHECK_TIMEOUT_S + 10, max_retries=0,
+            )
+            embed_executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CALLS)
+            embed_futures = {
+                embed_executor.submit(_check_one_embed_model_task, embed_client, m): m for m in embedding_models
+            }
+            st.session_state.embedding_availability_run = {
+                "executor": embed_executor, "futures": embed_futures, "pending": set(embed_futures),
+                "total": len(embedding_models), "done_count": 0, "results": {},
+            }
+            st.rerun()
+        if st.session_state.embedding_availability_run is not None:
+            _embed_availability_progress_fragment()
+
+        # Nicht erreichbare Embedding-Modelle ausblenden, langsame/unbekannte nur markieren -
+        # exakt dasselbe Muster wie bei den Chat-Modellen oben (hard_unavailable/slow_models).
+        embed_avail_models = st.session_state.embedding_availability_data.get("models", {})
+        embed_hard_unavailable = {m for m, info in embed_avail_models.items() if info.get("status") == "unavailable"}
+        embed_slow = {m for m, info in embed_avail_models.items() if info.get("status") == "slow"}
+        embed_choices = [m for m in embedding_models if m not in embed_hard_unavailable] or embedding_models
+        embed_hidden = set(embedding_models) & embed_hard_unavailable
+        if embed_hidden:
+            st.sidebar.caption(t("sidebar.rag.embed_hidden_caption", models=", ".join(sorted(embed_hidden))))
+
+        last_successful_embed = st.session_state.last_successful_embed_model
+        default_embed_idx = embed_choices.index(last_successful_embed) if last_successful_embed in embed_choices else 0
+        embed_model = st.sidebar.selectbox(
+            t("sidebar.rag.embed_model_label"), embed_choices, index=default_embed_idx, key="embed_model_pick",
+            format_func=lambda m: f"{m}{t('sidebar.rag.embed_slow_suffix')}" if m in embed_slow else m,
+        )
         try:
             index = get_index(nvidia_key, embed_model)
         except EmbedModelMismatch as e:
@@ -765,11 +882,24 @@ else:
             col_build, col_clear = st.sidebar.columns(2)
             if col_build.button(t("sidebar.rag.build_button"), disabled=not uploads, use_container_width=True):
                 with st.sidebar, st.spinner(t("sidebar.rag.build_spinner")):
+                    any_ok = False
                     for f in uploads:
                         try:
                             index.add_document(f.name, f.getvalue())
+                            any_ok = True
                         except Exception as e:
-                            st.sidebar.error(f"{f.name}: {describe_api_error(e)}")
+                            if _is_definitively_unavailable(e):
+                                st.sidebar.error(t("sidebar.rag.embed_404_hint", name=f.name))
+                                embed_avail_models[embed_model] = {
+                                    "status": "unavailable", "detail": describe_api_error(e),
+                                }
+                                st.session_state.embedding_availability_data = save_embedding_availability(
+                                    embed_avail_models,
+                                )
+                            else:
+                                st.sidebar.error(f"{f.name}: {describe_api_error(e)}")
+                    if any_ok:
+                        st.session_state.last_successful_embed_model = embed_model
             if col_clear.button(t("sidebar.rag.clear_button"), use_container_width=True):
                 index.clear()
 
