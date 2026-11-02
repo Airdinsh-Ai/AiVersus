@@ -40,7 +40,8 @@ AiVersus lässt dieselben Prompts parallel gegen beliebig viele [NVIDIA Build](h
 *`run-progress.png` - ein laufender Benchmark: Live-Status pro Modell/Prompt.*
 
 ![AiVersus Ergebniskarten](docs/screenshots/result-cards.png)
-*`result-cards.png` - Ergebniskarten eines Prompts, Antworten aufgeklappt.*
+*`result-cards.png` - Ergebniskarten eines Prompts, Antworten aufgeklappt, beste Antwort
+markiert und Sterne vergeben.*
 
 ![AiVersus Reasoning](docs/screenshots/reasoning.png)
 *`reasoning.png` - die Denkspur eines Reasoning-Modells, getrennt von seiner Antwort.*
@@ -56,8 +57,8 @@ AiVersus lässt dieselben Prompts parallel gegen beliebig viele [NVIDIA Build](h
 *`pricing-dialog.png` - die editierbare Preisliste, mit Quelle und Datum pro Modell.*
 
 ![AiVersus RAG](docs/screenshots/rag.png)
-*`rag.png` - die RAG-Sidebar (Embedding-Modell-Prüfung, Indexaufbau) und eine
-Ergebniskarte mit aufgeklappten abgerufenen Chunks.*
+*`rag.png` - die RAG-Sidebar nach dem Indexaufbau, und eine Ergebniskarte mit den
+abgerufenen Chunks und dem aufgeklappten Text eines Chunks.*
 
 ## Schnellstart
 

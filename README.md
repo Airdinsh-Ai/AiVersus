@@ -36,7 +36,8 @@ AiVersus runs the same prompts against any number of [NVIDIA Build](https://buil
 *`run-progress.png` - a benchmark in progress: live status per model/prompt.*
 
 ![AiVersus result cards](docs/screenshots/result-cards.png)
-*`result-cards.png` - result cards for one prompt, answers expanded.*
+*`result-cards.png` - result cards for one prompt, answers expanded, best answer marked
+and stars given.*
 
 ![AiVersus reasoning](docs/screenshots/reasoning.png)
 *`reasoning.png` - a reasoning model's thinking trace, shown separately from its answer.*
@@ -52,8 +53,8 @@ model" chart.*
 *`pricing-dialog.png` - the editable price list, with source and date per model.*
 
 ![AiVersus RAG](docs/screenshots/rag.png)
-*`rag.png` - the RAG sidebar (embedding-model check, index build) and a result card with
-its retrieved chunks expanded.*
+*`rag.png` - the RAG sidebar after the index is built, and a result card with its
+retrieved chunks and an expanded chunk's text.*
 
 ## Quickstart
 
