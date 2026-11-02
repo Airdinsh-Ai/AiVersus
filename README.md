@@ -58,8 +58,8 @@ for that with a long default timeout, which you can adjust in the sidebar).
 
 1. Enter your API key, test the connection, then add one or more models in **Models**.
 2. Write one or more prompts in the **Prompt Suite**.
-3. Set the shared **Parameters** (temperature, top_p, max_tokens, optional system prompt,
-   optional fixed seed).
+3. Set the shared **Parameters** (temperature, top_p, max_tokens - default 4096, raise it
+   if a card shows the "Truncated" badge - optional system prompt, optional fixed seed).
 4. Click **Start benchmark**. Results appear as cards per prompt as soon as each model
    finishes; rate the best answer and give stars if you like.
 5. Export results as CSV or JSON, or browse the **Timeline** for past runs.

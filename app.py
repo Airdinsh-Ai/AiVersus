@@ -878,7 +878,7 @@ st.subheader(t("main.parameters.header"))
 col_temp, col_top_p, col_max_tokens = st.columns(3)
 temperature = col_temp.number_input("temperature", min_value=0.0, max_value=2.0, value=0.7, step=0.1)
 top_p = col_top_p.number_input("top_p", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
-max_tokens = col_max_tokens.number_input("max_tokens", min_value=1, max_value=8192, value=1024, step=1)
+max_tokens = col_max_tokens.number_input("max_tokens", min_value=1, max_value=8192, value=4096, step=1)
 
 system_prompt = st.text_area(
     t("main.parameters.system_prompt_label"), value="", placeholder=t("main.parameters.system_prompt_placeholder"),

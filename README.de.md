@@ -63,7 +63,8 @@ der sich in der Sidebar anpassen lässt).
 1. API-Key eintragen, Verbindung testen, dann ein oder mehrere Modelle unter **Modelle**
    hinzufügen.
 2. Einen oder mehrere Prompts in der **Prompt-Suite** schreiben.
-3. Die gemeinsamen **Parameter** setzen (temperature, top_p, max_tokens, optionaler
+3. Die gemeinsamen **Parameter** setzen (temperature, top_p, max_tokens - Standard 4096,
+   bei sichtbarem "Abgeschnitten"-Badge auf einer Karte höher setzen -, optionaler
    System-Prompt, optional fixierter Seed).
 4. **Benchmark starten** klicken. Ergebnisse erscheinen als Karten pro Prompt, sobald ein
    Modell fertig ist; die beste Antwort markieren und bei Bedarf Sterne vergeben.
