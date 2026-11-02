@@ -498,6 +498,14 @@ if st.session_state.availability_run is not None:
 st.sidebar.divider()
 
 
+def _clean_text_cell(value) -> str | None:
+    """Leere/NaN-Zellen aus dem data_editor als None, nicht als String "None"/"nan"."""
+    if pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 @st.dialog(t("sidebar.pricing.dialog_title"), width="large")
 def _pricing_dialog() -> None:
     st.caption(t("sidebar.pricing.caption"))
@@ -530,11 +538,22 @@ def _pricing_dialog() -> None:
             new_models[model_name] = {
                 "input": float(r[col_input]) if pd.notna(r[col_input]) else None,
                 "output": float(r[col_output]) if pd.notna(r[col_output]) else None,
-                "source": str(r[col_source]).strip() or None,
-                "updated": str(r[col_updated]).strip() or None,
+                "source": _clean_text_cell(r[col_source]),
+                "updated": _clean_text_cell(r[col_updated]),
             }
         st.session_state.pricing_data = new_models
         save_pricing_file(new_models)
+        # Bereits ausgewaehlte Modelle nicht erst beim naechsten Entfernen+Hinzufuegen
+        # aktualisieren - ein gerade gespeicherter Preis gilt sofort auch fuer sie. Die
+        # number_input-Widgets unten (key=f"price_in_{model_id}") ignorieren ab ihrer ersten
+        # Erstellung jedes neue value= - ohne das direkte Ueberschreiben hier wuerden sie den
+        # gerade gespeicherten Preis im naechsten Rerun sofort wieder auf den alten Stand ziehen.
+        for model_id in st.session_state.selected_models:
+            priced = new_models.get(model_id)
+            if priced and priced.get("input") is not None and priced.get("output") is not None:
+                st.session_state.model_prices[model_id] = {"input": priced["input"], "output": priced["output"]}
+                st.session_state[f"price_in_{model_id}"] = priced["input"]
+                st.session_state[f"price_out_{model_id}"] = priced["output"]
         st.rerun()
     if col_close.button(t("sidebar.pricing.close"), use_container_width=True):
         st.rerun()
