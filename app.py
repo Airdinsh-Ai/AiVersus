@@ -334,60 +334,54 @@ def save_settings() -> None:
 
 
 _saved_settings = load_settings()
-if "prompts" not in st.session_state:
-    # p1: Zero-Shot (direkte Frage, keine Beispiele) - Technik-Etikett passt zum Prompt.
-    # p2: echtes Few-Shot (drei vorgemachte Beispiele vor der eigentlichen Aufgabe), siehe
-    # README-Abschnitt "Nutzung" - vorher stand hier "Schreibe eine Python-Funktion für
-    # Fibonacci." mit dem Etikett "Few-Shot Prompting", obwohl der Prompt gar keine Beispiele
-    # enthielt und damit eigentlich Zero-Shot war.
-    st.session_state.prompts = _saved_settings.get("prompts") or [
-        {"id": "p1", "text": "Erkläre RAG in 3 Sätzen.", "technique": "Zero-Shot Prompting"},
-        {
-            "id": "p2",
-            "text": (
-                "Klassifiziere die Stimmung (positiv/negativ/neutral) der folgenden Aussage.\n\n"
-                "Beispiel 1:\n"
-                "Aussage: \"Der Support hat mir super schnell geholfen, bin begeistert!\"\n"
-                "Stimmung: positiv\n\n"
-                "Beispiel 2:\n"
-                "Aussage: \"Die Lieferung kam drei Wochen zu spät und niemand hat reagiert.\"\n"
-                "Stimmung: negativ\n\n"
-                "Beispiel 3:\n"
-                "Aussage: \"Die Bestellung ist heute angekommen, Inhalt wie beschrieben.\"\n"
-                "Stimmung: neutral\n\n"
-                "Jetzt du:\n"
-                "Aussage: \"Die App ist ok, aber der Login hängt sich ständig auf.\"\n"
-                "Stimmung:"
-            ),
-            "technique": "Few-Shot Prompting",
-        },
-    ]
-if "results" not in st.session_state:
-    st.session_state.results = []
-if "unavailable_models" not in st.session_state:
-    st.session_state.unavailable_models = set()
-if "selected_models" not in st.session_state:
-    st.session_state.selected_models = _saved_settings.get("selected_models", [])
-if "model_prices" not in st.session_state:
-    st.session_state.model_prices = _saved_settings.get("model_prices", {})
-if "last_successful_test_model" not in st.session_state:
-    st.session_state.last_successful_test_model = None
-if "run" not in st.session_state:
-    st.session_state.run = None
-if "last_run_message" not in st.session_state:
-    st.session_state.last_run_message = None
-if "availability_data" not in st.session_state:
-    st.session_state.availability_data = load_availability()
-if "availability_run" not in st.session_state:
-    st.session_state.availability_run = None
-if "pricing_data" not in st.session_state:
-    st.session_state.pricing_data = load_pricing_file()
-if "embedding_availability_data" not in st.session_state:
-    st.session_state.embedding_availability_data = load_embedding_availability()
-if "embedding_availability_run" not in st.session_state:
-    st.session_state.embedding_availability_run = None
-if "last_successful_embed_model" not in st.session_state:
-    st.session_state.last_successful_embed_model = _saved_settings.get("last_successful_embed_model")
+# Alle Session-State-Schlüssel, die save_settings() (oder sonst ein Lesezugriff über
+# Punktnotation) später voraussetzt, werden HIER mit setdefault() angelegt - vor jedem
+# möglichen save_settings()-Aufruf. setdefault() ist idempotent (tut nichts, wenn der
+# Schlüssel schon existiert) und übersteht damit sowohl eine frische Sitzung als auch eine
+# bestehende Sitzung, der ein einzelner Schlüssel fehlt (z.B. nach einem Hot-Reload auf eine
+# neuere Code-Version mit einem zusätzlichen Schlüssel, oder nach einer alten settings.json
+# ohne diesen Schlüssel) - reiner Punktzugriff (st.session_state.x) auf einen fehlenden
+# Schlüssel wirft sonst AttributeError.
+# p1: Zero-Shot (direkte Frage, keine Beispiele) - Technik-Etikett passt zum Prompt.
+# p2: echtes Few-Shot (drei vorgemachte Beispiele vor der eigentlichen Aufgabe), siehe
+# README-Abschnitt "Nutzung" - vorher stand hier "Schreibe eine Python-Funktion für
+# Fibonacci." mit dem Etikett "Few-Shot Prompting", obwohl der Prompt gar keine Beispiele
+# enthielt und damit eigentlich Zero-Shot war.
+st.session_state.setdefault("prompts", _saved_settings.get("prompts") or [
+    {"id": "p1", "text": "Erkläre RAG in 3 Sätzen.", "technique": "Zero-Shot Prompting"},
+    {
+        "id": "p2",
+        "text": (
+            "Klassifiziere die Stimmung (positiv/negativ/neutral) der folgenden Aussage.\n\n"
+            "Beispiel 1:\n"
+            "Aussage: \"Der Support hat mir super schnell geholfen, bin begeistert!\"\n"
+            "Stimmung: positiv\n\n"
+            "Beispiel 2:\n"
+            "Aussage: \"Die Lieferung kam drei Wochen zu spät und niemand hat reagiert.\"\n"
+            "Stimmung: negativ\n\n"
+            "Beispiel 3:\n"
+            "Aussage: \"Die Bestellung ist heute angekommen, Inhalt wie beschrieben.\"\n"
+            "Stimmung: neutral\n\n"
+            "Jetzt du:\n"
+            "Aussage: \"Die App ist ok, aber der Login hängt sich ständig auf.\"\n"
+            "Stimmung:"
+        ),
+        "technique": "Few-Shot Prompting",
+    },
+])
+st.session_state.setdefault("results", [])
+st.session_state.setdefault("unavailable_models", set())
+st.session_state.setdefault("selected_models", _saved_settings.get("selected_models", []))
+st.session_state.setdefault("model_prices", _saved_settings.get("model_prices", {}))
+st.session_state.setdefault("last_successful_test_model", None)
+st.session_state.setdefault("run", None)
+st.session_state.setdefault("last_run_message", None)
+st.session_state.setdefault("availability_data", load_availability())
+st.session_state.setdefault("availability_run", None)
+st.session_state.setdefault("pricing_data", load_pricing_file())
+st.session_state.setdefault("embedding_availability_data", load_embedding_availability())
+st.session_state.setdefault("embedding_availability_run", None)
+st.session_state.setdefault("last_successful_embed_model", _saved_settings.get("last_successful_embed_model"))
 
 
 def _original_message(e: Exception) -> str:
