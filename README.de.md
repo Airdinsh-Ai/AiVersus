@@ -86,10 +86,6 @@ verwendet wurden. Der Index liegt lokal in `rag_store/`.
 
 ## Screenshots
 
-Screenshot-Dateien werden nicht eingecheckt (lokaler Zustand, wie `runs.db`). Die
-Platzhalter unten sind genau die Dateinamen, die unter `docs/screenshots/` erwartet
-werden - eine PNG mit diesem Namen dort ablegen ersetzt das kaputte Bild-Symbol.
-
 ![AiVersus Übersicht](docs/screenshots/overview.png)
 *`overview.png` - die Hauptansicht: ein paar hinzugefügte Modelle, ein fertiger
 Benchmark-Lauf mit Ergebniskarten.*

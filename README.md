@@ -79,10 +79,6 @@ locally in `rag_store/`.
 
 ## Screenshots
 
-Screenshot files are not committed (they're local-only, like `runs.db`). The placeholders
-below are the exact filenames expected under `docs/screenshots/` - drop a PNG with that
-name in to replace the broken-image icon.
-
 ![AiVersus overview](docs/screenshots/overview.png)
 *`overview.png` - the main comparison view: a few models added, a finished benchmark run
 with result cards.*
