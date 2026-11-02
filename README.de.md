@@ -84,6 +84,24 @@ Abschnitte werden einmal pro Prompt (nicht einmal pro Modell) abgerufen und als 
 mitgegeben; jede Ergebniskarte zeigt, ob Kontext injiziert wurde und welche Abschnitte
 verwendet wurden. Der Index liegt lokal in `rag_store/`.
 
+## Screenshots
+
+Screenshot-Dateien werden nicht eingecheckt (lokaler Zustand, wie `runs.db`). Die
+Platzhalter unten sind genau die Dateinamen, die unter `docs/screenshots/` erwartet
+werden - eine PNG mit diesem Namen dort ablegen ersetzt das kaputte Bild-Symbol.
+
+![AiVersus Übersicht](docs/screenshots/overview.png)
+*`overview.png` - die Hauptansicht: ein paar hinzugefügte Modelle, ein fertiger
+Benchmark-Lauf mit Ergebniskarten.*
+
+![AiVersus RAG](docs/screenshots/rag.png)
+*`rag.png` - die RAG-Sidebar (Embedding-Modell-Prüfung, Indexaufbau) und eine
+Ergebniskarte mit aufgeklappten abgerufenen Chunks.*
+
+![AiVersus Timeline](docs/screenshots/timeline.png)
+*`timeline.png` - der Timeline-Abschnitt: ein Metrik-Chart über mehrere Läufe plus das
+"Siege pro Modell"-Diagramm.*
+
 ## Datenschutz
 
 Dein API-Key liegt nur im Speicher der Browser-Sitzung, solange die App offen ist. Er wird

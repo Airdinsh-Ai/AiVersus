@@ -77,6 +77,24 @@ retrieved once per prompt (not once per model) and added as context; each result
 shows whether context was injected and which chunks were used. The index is stored
 locally in `rag_store/`.
 
+## Screenshots
+
+Screenshot files are not committed (they're local-only, like `runs.db`). The placeholders
+below are the exact filenames expected under `docs/screenshots/` - drop a PNG with that
+name in to replace the broken-image icon.
+
+![AiVersus overview](docs/screenshots/overview.png)
+*`overview.png` - the main comparison view: a few models added, a finished benchmark run
+with result cards.*
+
+![AiVersus RAG](docs/screenshots/rag.png)
+*`rag.png` - the RAG sidebar (embedding-model check, index build) and a result card with
+its retrieved chunks expanded.*
+
+![AiVersus timeline](docs/screenshots/timeline.png)
+*`timeline.png` - the Timeline section: a metric chart across runs plus the "wins per
+model" chart.*
+
 ## Privacy
 
 Your API key lives only in the browser session's memory for as long as the app is open.
