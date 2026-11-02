@@ -65,6 +65,8 @@
   "sidebar.rag.clear_button": "Clear index",
   "sidebar.rag.source_line": "· {name} ({count} chunks)",
   "sidebar.rag.not_indexed_caption": "No document indexed yet - the run will go without context.",
+  "sidebar.rag.embed_mismatch": "The existing index was built with embedding model '{stored}', not '{requested}'. Clear the index first to switch models.",
+  "sidebar.rag.embed_mismatch_clear_button": "Clear index and switch to '{requested}'",
 
   "sidebar.footer": "NVIDIA Build · Key kept only for this session, never stored.",
 

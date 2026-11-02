@@ -30,6 +30,39 @@ class RetrievedChunk:
     chunk_index: int
 
 
+class EmbedModelMismatch(Exception):
+    """Die Collection enthält bereits Embeddings eines anderen Modells.
+
+    Vektoren verschiedener Embedding-Modelle sind nicht vergleichbar (oft sogar
+    unterschiedliche Dimension) - ein stillschweigendes Mischen würde das Retrieval
+    unbemerkt kaputt machen, deshalb wird der Wechsel verweigert statt ihn zuzulassen.
+    """
+
+    def __init__(self, stored_model: str, requested_model: str):
+        self.stored_model = stored_model
+        self.requested_model = requested_model
+        super().__init__(f"Collection wurde mit {stored_model!r} aufgebaut, nicht {requested_model!r}.")
+
+
+def clear_persisted_collection(persist_dir: str, embed_model: str | None = None) -> None:
+    """Leert die Collection ohne eine RagIndex-Instanz - Rettungsweg für den Fall, dass
+
+    RagIndex.__init__ selbst wegen EmbedModelMismatch nicht durchläuft (dann gibt es noch
+    kein Objekt, auf dem man .clear() aufrufen könnte).
+    """
+    import chromadb
+
+    client = chromadb.PersistentClient(path=persist_dir)
+    try:
+        collection = client.get_collection("documents")
+    except Exception:
+        return
+    ids = collection.get()["ids"]
+    if ids:
+        collection.delete(ids=ids)
+    collection.modify(metadata={"embed_model": embed_model} if embed_model else {})
+
+
 def extract_text(filename: str, data: bytes) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix == ".pdf":
@@ -60,7 +93,19 @@ class RagIndex:
 
         self._client = OpenAI(api_key=api_key, base_url=base_url)
         self._embed_model = embed_model
-        self._collection = chromadb.PersistentClient(path=persist_dir).get_or_create_collection("documents")
+        collection = chromadb.PersistentClient(path=persist_dir).get_or_create_collection("documents")
+        # Eine Collection, ein Embedding-Modell pro Collection via Metadaten statt eine Collection
+        # pro Modell (Modell-IDs enthalten "/", keine gültigen ChromaDB-Collection-Namen) - bei
+        # Abweichung mit vorhandenen Chunks wird verweigert (siehe EmbedModelMismatch), ist die
+        # Collection leer (z.B. nach .clear()), wird das neue Modell stillschweigend übernommen.
+        stored_model = (collection.metadata or {}).get("embed_model")
+        if stored_model is None:
+            collection.modify(metadata={"embed_model": embed_model})
+        elif stored_model != embed_model:
+            if collection.count() > 0:
+                raise EmbedModelMismatch(stored_model, embed_model)
+            collection.modify(metadata={"embed_model": embed_model})
+        self._collection = collection
 
     def _embed(self, texts: list) -> list:
         resp = self._client.embeddings.create(model=self._embed_model, input=texts)

@@ -50,7 +50,7 @@ from models import (
     fetch_embedding_models,
     pick_quick_test_candidates,
 )
-from rag import RagIndex, build_prompt
+from rag import EmbedModelMismatch, RagIndex, build_prompt, clear_persisted_collection
 from storage import RunStore
 
 st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
@@ -746,28 +746,39 @@ else:
         st.sidebar.warning(t("sidebar.rag.no_embed_model"))
     else:
         embed_model = st.sidebar.selectbox(t("sidebar.rag.embed_model_label"), embedding_models, key="embed_model_pick")
-        index = get_index(nvidia_key, embed_model)
-        top_k = st.sidebar.slider(t("sidebar.rag.topk_label"), 1, 10, 4)
-        uploads = st.sidebar.file_uploader(
-            t("sidebar.rag.upload_label"), type=["pdf", "txt", "md"], accept_multiple_files=True,
-        )
-        col_build, col_clear = st.sidebar.columns(2)
-        if col_build.button(t("sidebar.rag.build_button"), disabled=not uploads, use_container_width=True):
-            with st.sidebar, st.spinner(t("sidebar.rag.build_spinner")):
-                for f in uploads:
-                    try:
-                        index.add_document(f.name, f.getvalue())
-                    except Exception as e:
-                        st.sidebar.error(f"{f.name}: {describe_api_error(e)}")
-        if col_clear.button(t("sidebar.rag.clear_button"), use_container_width=True):
-            index.clear()
+        try:
+            index = get_index(nvidia_key, embed_model)
+        except EmbedModelMismatch as e:
+            st.sidebar.error(t("sidebar.rag.embed_mismatch", stored=e.stored_model, requested=e.requested_model))
+            if st.sidebar.button(
+                t("sidebar.rag.embed_mismatch_clear_button", requested=embed_model), use_container_width=True,
+            ):
+                clear_persisted_collection(os.path.join(DATA_DIR, "rag_store"), embed_model=embed_model)
+                get_index.clear()  # verworfene RagIndex-Instanzen (alte Collection-Metadaten) nicht weiter cachen
+                st.rerun()
+            index = None
+        else:
+            top_k = st.sidebar.slider(t("sidebar.rag.topk_label"), 1, 10, 4)
+            uploads = st.sidebar.file_uploader(
+                t("sidebar.rag.upload_label"), type=["pdf", "txt", "md"], accept_multiple_files=True,
+            )
+            col_build, col_clear = st.sidebar.columns(2)
+            if col_build.button(t("sidebar.rag.build_button"), disabled=not uploads, use_container_width=True):
+                with st.sidebar, st.spinner(t("sidebar.rag.build_spinner")):
+                    for f in uploads:
+                        try:
+                            index.add_document(f.name, f.getvalue())
+                        except Exception as e:
+                            st.sidebar.error(f"{f.name}: {describe_api_error(e)}")
+            if col_clear.button(t("sidebar.rag.clear_button"), use_container_width=True):
+                index.clear()
 
-        for name, n in index.sources().items():
-            st.sidebar.caption(t("sidebar.rag.source_line", name=name, count=n))
+            for name, n in index.sources().items():
+                st.sidebar.caption(t("sidebar.rag.source_line", name=name, count=n))
 
-        rag_ready = index.document_count() > 0
-        if not rag_ready:
-            st.sidebar.caption(t("sidebar.rag.not_indexed_caption"))
+            rag_ready = index.document_count() > 0
+            if not rag_ready:
+                st.sidebar.caption(t("sidebar.rag.not_indexed_caption"))
 
 st.sidebar.divider()
 st.sidebar.caption(t("sidebar.footer"))

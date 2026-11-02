@@ -65,6 +65,8 @@
   "sidebar.rag.clear_button": "Index leeren",
   "sidebar.rag.source_line": "· {name} ({count} Chunks)",
   "sidebar.rag.not_indexed_caption": "Noch kein Dokument indexiert - der Lauf geht ohne Kontext.",
+  "sidebar.rag.embed_mismatch": "Der bestehende Index wurde mit dem Embedding-Modell '{stored}' aufgebaut, nicht mit '{requested}'. Erst den Index leeren, um das Modell zu wechseln.",
+  "sidebar.rag.embed_mismatch_clear_button": "Index leeren und '{requested}' übernehmen",
 
   "sidebar.footer": "NVIDIA Build · Key nur in dieser Sitzung, nirgends gespeichert.",
 
