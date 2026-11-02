@@ -81,7 +81,7 @@ lang_choice = st.sidebar.radio(
 st.session_state.lang = "en" if lang_choice == "EN" else "de"
 t = make_translator(st.session_state.lang)
 
-NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_BASE_URL = os.environ.get("AIVERSUS_BASE_URL") or "https://integrate.api.nvidia.com/v1"
 CATALOG_TIMEOUT_S = 30.0  # für models.list() - unabhängig von der Generierungs-Warteschlange
 MAX_CONCURRENT_CALLS = 5  # Calls parallel, aber begrenzt - kein Ansturm auf den Freikontingent-Key
 
