@@ -319,11 +319,15 @@ def load_settings() -> dict:
 
 
 def save_settings() -> None:
+    # .get(...) statt Punktzugriff (st.session_state.x) - fehlt einer dieser Schlüssel (z.B.
+    # eine bestehende Sitzung kennt einen neu hinzugekommenen Schlüssel noch nicht, oder er
+    # wurde gezielt aus session_state entfernt), schreibt save_settings() einen sinnvollen
+    # Leerwert statt mit AttributeError abzustürzen.
     data = {
-        "prompts": st.session_state.prompts,
-        "selected_models": st.session_state.selected_models,
-        "model_prices": st.session_state.model_prices,
-        "last_successful_embed_model": st.session_state.last_successful_embed_model,
+        "prompts": st.session_state.get("prompts", []),
+        "selected_models": st.session_state.get("selected_models", []),
+        "model_prices": st.session_state.get("model_prices", {}),
+        "last_successful_embed_model": st.session_state.get("last_successful_embed_model"),
     }
     with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
