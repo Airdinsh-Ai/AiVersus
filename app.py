@@ -1471,14 +1471,22 @@ known = store.known_models()
 if not known:
     st.caption(t("main.timeline.no_runs_caption"))
 else:
-    chosen = st.multiselect(t("main.timeline.models_label"), known, default=known[:6])
     # tokens_per_s zuerst (= Standard ohne explizites index=) - bessere Modellvergleichs-Metrik
     # als generation_s, da sie Output-Laenge und Zeit in einer Zahl zusammenfuehrt.
     TIMELINE_METRICS = ["tokens_per_s", "generation_s", "ttft_s", "latency_s", "tokens_out", "tokens_in", "cost_usd"]
+    # Die Metrik-Auswahl braucht einen expliziten key, um ihren aktuellen Wert HIER lesen zu
+    # koennen, bevor das Widget unten (erneut) erzeugt wird - session_state[key] besteht ab
+    # dem ersten Lauf fort, unabhaengig von der Reihenfolge der Widget-Erzeugung im Skript.
+    default_metric = st.session_state.get("timeline_metric", TIMELINE_METRICS[0])
+    # Standardauswahl: Modelle mit mindestens einem Wert fuer die (aktuelle oder initiale)
+    # Metrik, neuester Lauf zuerst, max. 6 - statt alphabetisch per known[:6]. Ein Modell ohne
+    # jeden Wert fuer die Metrik waere sonst nur eine leere Linie in der Auswahl.
+    default_chosen = store.models_ranked_by_recent_metric(known, default_metric, limit=6)
+    chosen = st.multiselect(t("main.timeline.models_label"), known, default=default_chosen)
     metric = st.selectbox(
         t("main.timeline.metric_label"), TIMELINE_METRICS,
         format_func=lambda m: t(f"main.timeline.metric.{m}"),
-        help=t("main.timeline.metric_help"),
+        help=t("main.timeline.metric_help"), key="timeline_metric",
     )
     if chosen:
         hist = store.load_for_models(chosen)

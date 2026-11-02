@@ -15,6 +15,12 @@ import sqlite3
 
 import pandas as pd
 
+# Whitelist echter Spaltennamen fuer models_ranked_by_recent_metric() - der Spaltenname wird
+# dort direkt in SQL interpoliert, daher nie ungeprueft aus einem Aufrufer-Parameter uebernehmen.
+TIMELINE_METRIC_COLUMNS = {
+    "tokens_per_s", "generation_s", "ttft_s", "latency_s", "tokens_out", "tokens_in", "cost_usd",
+}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS results (
     run_id TEXT NOT NULL,
@@ -122,6 +128,28 @@ class RunStore:
             )
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         return df
+
+    def models_ranked_by_recent_metric(self, model_ids: list, metric: str, limit: int | None = None) -> list:
+        """Modelle aus model_ids mit mindestens einem Wert für `metric`, sortiert nach dem
+
+        Zeitstempel ihres jüngsten solchen Laufs (neuester Lauf zuerst) - Grundlage für die
+        Timeline-Standardauswahl (ein Modell ohne jeden Wert für die aktuell gewählte Metrik
+        taugt dort als Linie nichts, ein zuletzt aktiv genutztes Modell mit Werten schon).
+        """
+        if metric not in TIMELINE_METRIC_COLUMNS:
+            raise ValueError(f"Unbekannte Timeline-Metrik: {metric!r}")
+        if not model_ids:
+            return []
+        marks = ",".join("?" for _ in model_ids)
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                f"SELECT model_id, MAX(timestamp) AS last_ts FROM results "
+                f"WHERE model_id IN ({marks}) AND ok = 1 AND {metric} IS NOT NULL "
+                f"GROUP BY model_id ORDER BY last_ts DESC",
+                model_ids,
+            ).fetchall()
+        ranked = [r[0] for r in rows]
+        return ranked[:limit] if limit is not None else ranked
 
     def known_models(self) -> list:
         """Modelle mit mindestens einem erfolgreichen Lauf - reine Fehlschläge taugen nicht als
