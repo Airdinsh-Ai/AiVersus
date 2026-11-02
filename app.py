@@ -50,7 +50,6 @@ from models import (
     fetch_embedding_models,
     pick_quick_test_candidates,
 )
-from pricing import PRICING_USD_PER_1M_TOKENS
 from rag import RagIndex, build_prompt
 from storage import RunStore
 
@@ -659,11 +658,7 @@ if col_add.button(t("main.models.add_button"), disabled=not model_pick, use_cont
             "free": priced.get("free", False),
         }
     else:
-        legacy = PRICING_USD_PER_1M_TOKENS.get(model_pick)  # alte OpenAI/Gemini-IDs, meist kein Treffer
-        st.session_state.model_prices[model_pick] = (
-            {"input": legacy[0], "output": legacy[1], "free": False} if legacy
-            else {"input": 0.0, "output": 0.0, "free": False}
-        )
+        st.session_state.model_prices[model_pick] = {"input": 0.0, "output": 0.0, "free": False}
     st.rerun()
 
 if st.session_state.selected_models:
