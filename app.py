@@ -112,6 +112,130 @@ def model_color(model_id: str) -> str:
     return MODEL_COLOR_PALETTE[idx]
 
 
+def _fmt(value, suffix: str = "", digits: int = 2) -> str:
+    if value is None:
+        return "–"
+    return f"{value:.{digits}f}{suffix}" if isinstance(value, float) else f"{value}{suffix}"
+
+
+def _fmt_tokens(value) -> str:
+    return "–" if value is None else str(value)
+
+
+def _fmt_cost(value) -> str:
+    return "–" if value is None else f"${value:.6f}"
+
+
+_STATUS_COLORS = {  # (Hintergrund, Text) - "ok" bekommt jetzt auch ein Badge, nicht nur Fehler
+    "ok": ("#16301C", "#7FD858"), "fehler": ("#3A1F22", "#E85D75"),
+    "timeout": ("#3A2A14", "#F2B34A"), "abgebrochen": ("#242830", "#9AA3AE"),
+}
+ANSWER_KEY_PREFIX = "show_answer_"
+
+
+def _render_card(container, row: dict, card_key: str) -> None:
+    """Eine Ergebniskarte - für Benchmark-Ergebnisse UND den Verbindungstest gleichermaßen.
+
+    Immer sichtbar: Name/Farbe, Status-/Abgeschnitten-/Beste-Antwort-Badges, Sterne, die
+    Verbrauchszeile, bei Fehlern die kurze Fehlermeldung. Aufklappbar (je ein eigener
+    st.expander, nicht verschachtelt): Antwort, Reasoning, RAG-Quellen, Parameter. Die
+    Antwort selbst geht NIE als HTML-String durch html.escape(), sondern über st.markdown() -
+    sonst rendert z.B. ein ```python-Block oder eine '#'-Überschrift in der Modellantwort
+    kaputt (Markdown wird im umschließenden HTML-String erneut interpretiert) oder zeigt
+    escapte Entities (&quot; &gt; &lt;) statt der echten Zeichen (siehe Chat-Protokoll).
+    """
+    color = model_color(row["model_id"])
+    status = row.get("outcome") or ("ok" if row.get("ok") else "fehler")
+    bg, fg = _STATUS_COLORS.get(status, _STATUS_COLORS["fehler"])
+    pill = "display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;margin:0 6px 6px 0;"
+    badges_html = f"<span style='{pill}background:{bg};color:{fg};'>{html.escape(t(f'main.run.status_label.{status}'))}</span>"
+    if row.get("finish_reason") == "length":
+        badges_html += f"<span style='{pill}background:#3A2A14;color:#F2B34A;'>{t('main.card.truncated_badge')}</span>"
+    if row.get("is_best"):
+        badges_html += (
+            f"<span style='{pill}background:#2A2314;color:#F2B34A;font-weight:600;'>{t('main.card.best_badge')}</span>"
+        )
+
+    sp = row.get("sent_params") or {}
+    seed_display = sp.get("seed") if sp.get("seed") is not None else t("main.card.param_not_set")
+    metrics = (
+        f"TTFT {_fmt(row.get('ttft_s'), ' s')} · {t('main.card.metric_gen')} {_fmt(row.get('generation_s'), ' s')} · "
+        f"Tokens {_fmt_tokens(row.get('tokens_in'))}/{_fmt_tokens(row.get('tokens_out'))}"
+        + (t("main.card.metric_reasoning_tokens", count=row["reasoning_tokens"]) if row.get("reasoning_tokens") else "")
+        + f" · {_fmt(row.get('tokens_per_s'), ' ' + t('main.card.metric_tokps'), 1)} · {_fmt_cost(row.get('cost_usd'))}"
+    )
+
+    with container:
+        st.markdown(
+            "<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:6px;\">"
+            f"<span style=\"color:{color};font-size:18px;\">●</span>"
+            f"<strong>{html.escape(row['model_id'])}</strong></div>"
+            f"<div>{badges_html}</div>",
+            unsafe_allow_html=True,
+        )
+        if row.get("stars"):
+            st.markdown(
+                f"<div style='color:#F2B34A;margin-bottom:6px;'>{'★' * row['stars']}{'☆' * (5 - row['stars'])}</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown(
+            f"<div style=\"font-size:13px;color:#9AA3AE;margin:4px 0 8px;"
+            f"font-family:'IBM Plex Mono',monospace;\">{metrics}</div>",
+            unsafe_allow_html=True,
+        )
+        if not row.get("ok") and row.get("response"):
+            st.markdown(
+                f"<div style=\"font-size:13px;color:#E85D75;margin-bottom:8px;\">{html.escape(row['response'])}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if row.get("ok") and row.get("response"):
+            # st.expander(expanded=..., key=...) ignoriert einen programmatisch gesetzten
+            # session_state-Wert nach der ersten Erstellung zuverlässig (live getestet: "Alle
+            # aufklappen" hat die Expander sichtbar nicht geöffnet) - st.toggle reagiert auf
+            # genau dasselbe Muster (session_state[key] vor der Widget-Erstellung setzen)
+            # zuverlässig, siehe main.card.show_answer_toggle als Ersatz für st.expander hier.
+            answer_key = f"{ANSWER_KEY_PREFIX}{card_key}"
+            if st.toggle(t("main.card.show_answer_toggle"), key=answer_key):
+                st.markdown(row["response"])
+
+        if row.get("reasoning"):
+            with st.expander(t("common.reasoning"), key=f"reasoning_{card_key}"):
+                st.markdown(row["reasoning"])
+
+        if row.get("injected_context"):
+            rag_label = t("main.card.rag_summary", count=len(row.get("retrieved_sources", [])))
+            with st.expander(rag_label, key=f"rag_{card_key}"):
+                for source in row.get("retrieved_sources", []):
+                    st.markdown(f"- {source}")
+
+        with st.expander(t("main.card.parameters_expander"), key=f"params_{card_key}"):
+            params_line = (
+                f"temperature={sp.get('temperature')}, top_p={sp.get('top_p')}, "
+                f"max_tokens={sp.get('max_tokens')}, seed={seed_display}"
+            )
+            if sp.get("dropped_param"):
+                params_line += t("main.card.param_dropped_suffix", param=sp["dropped_param"])
+            st.caption(params_line)
+            st.caption(f"{t('main.card.prompt_label')}: {row.get('prompt_text') or t('common.unknown_prompt')}")
+
+
+def _card_key(row: dict) -> str:
+    return f"{row['run_id']}_{row['prompt_id']}_{row['model_id']}"
+
+
+def _classify_outcome(result, exc) -> str:
+    """ok / timeout / abgebrochen / fehler - für Status-Badges und die Live-Statuszeile."""
+    error = exc if exc is not None else (None if result is None or result.ok else result.error)
+    if error is None:
+        return "ok"
+    if isinstance(error, StreamCancelled):
+        return "abgebrochen"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    return "fehler"
+
+
 def load_availability() -> dict:
     """{"checked_at": iso-Zeitstempel oder None, "models": {model_id: {"status", "detail"}}}."""
     if not os.path.exists(AVAILABILITY_PATH):
@@ -400,28 +524,40 @@ if st.sidebar.button(t("sidebar.test.button"), disabled=not nvidia_key):
 
             status_box.empty()
             text_box.empty()
+            test_sent_params = {
+                "temperature": sent_params["temperature"], "max_tokens": sent_params["max_tokens"],
+                "top_p": None, "seed": None, "dropped_param": None,
+            }
             if result.ok:
                 st.session_state.last_successful_test_model = test_model
                 st.sidebar.success(t("sidebar.test.answered", model=test_model, duration=result.duration_s))
                 if len(tried) > 1:
                     st.sidebar.caption(t("sidebar.test.tried_unavailable", models=", ".join(tried[:-1])))
-                st.sidebar.write(t("sidebar.test.answer_label"), result.content)
-                st.sidebar.write(t("sidebar.test.params_sent_label"), {"model": test_model, **sent_params})
-                st.sidebar.write(
-                    t("sidebar.test.usage_label"),
-                    {
-                        "prompt_tokens": result.tokens_in,
-                        "completion_tokens": result.tokens_out,
-                        "reasoning_tokens": result.reasoning_tokens,
-                    },
-                )
-                st.sidebar.write(t("sidebar.test.ttft_label"), f"{result.ttft_s} s / {result.generation_s} s")
-                st.sidebar.write(t("sidebar.test.finish_reason_label"), result.finish_reason)
-                if result.reasoning:
-                    with st.sidebar.expander(t("common.reasoning")):
-                        st.write(result.reasoning)
+                test_row = {
+                    "model_id": test_model, "ok": True, "response": result.content, "reasoning": result.reasoning,
+                    "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
+                    "reasoning_tokens": result.reasoning_tokens, "ttft_s": result.ttft_s,
+                    "generation_s": result.generation_s,
+                    "tokens_per_s": (
+                        round(result.tokens_out / result.generation_s, 1)
+                        if result.tokens_out and result.generation_s else None
+                    ),
+                    "cost_usd": None, "finish_reason": result.finish_reason, "outcome": "ok",
+                    "sent_params": test_sent_params, "injected_context": False, "retrieved_sources": [],
+                    "is_best": False, "stars": None, "prompt_text": t("sidebar.test.prompt"),
+                }
             else:
                 st.sidebar.error(describe_api_error(result.error))
+                test_row = {
+                    "model_id": test_model, "ok": False, "response": describe_api_error(result.error),
+                    "reasoning": "", "tokens_in": None, "tokens_out": None, "reasoning_tokens": None,
+                    "ttft_s": result.ttft_s, "generation_s": result.generation_s, "tokens_per_s": None,
+                    "cost_usd": None, "finish_reason": result.finish_reason,
+                    "outcome": _classify_outcome(result, None),
+                    "sent_params": test_sent_params, "injected_context": False, "retrieved_sources": [],
+                    "is_best": False, "stars": None, "prompt_text": t("sidebar.test.prompt"),
+                }
+            _render_card(st.sidebar.container(border=True), test_row, f"test_{test_model}")
 
 # ---------------- Sidebar: Verfügbarkeit ----------------
 st.sidebar.divider()
@@ -824,18 +960,6 @@ def _cost_usd(model_id: str, tokens_in, tokens_out):
     return round((tokens_in * price["input"] + tokens_out * price["output"]) / 1_000_000, 6)
 
 
-def _classify_outcome(result, exc) -> str:
-    """ok / timeout / abgebrochen / fehler - für die Live-Statuszeile, nicht nur "fertig"."""
-    error = exc if exc is not None else (None if result is None or result.ok else result.error)
-    if error is None:
-        return "ok"
-    if isinstance(error, StreamCancelled):
-        return "abgebrochen"
-    if isinstance(error, TimeoutError):
-        return "timeout"
-    return "fehler"
-
-
 def _actual_sent_params(result) -> dict:
     """Was tatsächlich gesendet wurde - nach einem 400-Retry kann das von der Vorgabe abweichen."""
     if result is None:  # Fehler vor dem ersten Versuch (z.B. RAG-Retrieval) - nur die Absicht bekannt
@@ -865,6 +989,8 @@ def _build_result_row(
         "sent_params": _actual_sent_params(result),
         "stars": None,
         "is_best": False,
+        "outcome": _classify_outcome(result, exc),
+        "finish_reason": result.finish_reason if result is not None else None,
     }
     if exc is not None:
         duration = round(time.perf_counter() - call_start, 3)
@@ -1045,85 +1171,6 @@ def _benchmark_progress_fragment() -> None:
 if st.session_state.run is not None:
     _benchmark_progress_fragment()
 
-def _fmt(value, suffix: str = "", digits: int = 2) -> str:
-    if value is None:
-        return "–"
-    return f"{value:.{digits}f}{suffix}" if isinstance(value, float) else f"{value}{suffix}"
-
-
-def _fmt_tokens(value) -> str:
-    return "–" if value is None else str(value)
-
-
-def _fmt_cost(value) -> str:
-    return "–" if value is None else f"${value:.6f}"
-
-
-def _render_result_card(row: dict) -> str:
-    # Bewusst EIN zusammenhängender String ohne eingerücktes HTML über mehrere Zeilen: st.markdown
-    # interpretiert eine Zeile mit >= 4 Leerzeichen Einzug als Markdown-Codeblock und reißt dann
-    # auch die nächste(n) Karte(n) mit in den Codeblock (Live-Test-Bug, siehe PROTOKOLL.md).
-    color = model_color(row["model_id"])
-    sp = row.get("sent_params") or {}
-    seed_display = sp.get("seed") if sp.get("seed") is not None else t("main.card.param_not_set")
-    params_line = (
-        f"temperature={sp.get('temperature')}, top_p={sp.get('top_p')}, max_tokens={sp.get('max_tokens')}, "
-        f"seed={seed_display}"
-    )
-    if sp.get("dropped_param"):
-        params_line += t("main.card.param_dropped_suffix", param=sp["dropped_param"])
-    metrics = (
-        f"TTFT {_fmt(row.get('ttft_s'), ' s')} · {t('main.card.metric_gen')} {_fmt(row.get('generation_s'), ' s')} · "
-        f"Tokens {_fmt_tokens(row.get('tokens_in'))}/{_fmt_tokens(row.get('tokens_out'))}"
-        + (t("main.card.metric_reasoning_tokens", count=row["reasoning_tokens"]) if row.get("reasoning_tokens") else "")
-        + f" · {_fmt(row.get('tokens_per_s'), ' ' + t('main.card.metric_tokps'), 1)} · {_fmt_cost(row.get('cost_usd'))}"
-    )
-    pill = "display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;margin:0 0 6px;"
-    status_html = (
-        "" if row["ok"]
-        else f"<span style='{pill}background:#3A1F22;color:#E85D75;'>{t('main.card.error_badge')}</span><br>"
-    )
-    if row.get("is_best"):
-        status_html += f"<span style='{pill}background:#2A2314;color:#F2B34A;font-weight:600;'>{t('main.card.best_badge')}</span><br>"
-    if row.get("stars"):
-        status_html += f"<div style='color:#F2B34A;margin-bottom:6px;'>{'★' * row['stars']}{'☆' * (5 - row['stars'])}</div>"
-    prompt_text_html = (
-        f"<div style=\"font-size:12px;color:#7D8691;margin-bottom:6px;\">"
-        f"{html.escape(row.get('prompt_text') or t('common.unknown_prompt'))}</div>"
-    )
-    reasoning_html = ""
-    if row.get("reasoning"):
-        reasoning_html = (
-            f"<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>{t('common.reasoning')}</summary>"
-            f"<div style='white-space:pre-wrap;margin-top:6px;font-size:13px;'>{html.escape(row['reasoning'])}</div>"
-            "</details>"
-        )
-    rag_html = ""
-    if row.get("injected_context"):
-        sources_list = "".join(f"<li>{html.escape(s)}</li>" for s in row.get("retrieved_sources", []))
-        rag_summary = t("main.card.rag_summary", count=len(row.get("retrieved_sources", [])))
-        rag_html = (
-            f"<details style='margin-top:8px;'><summary style='cursor:pointer;color:#9AA3AE;'>{rag_summary}</summary>"
-            f"<ul style='margin:6px 0 0; padding-left:18px; font-size:12px;'>{sources_list}</ul></details>"
-        )
-    return (
-        "<div style=\"min-width:320px;max-width:380px;flex:0 0 auto;background:#14171C;"
-        "border:1px solid #252A31;border-radius:12px;padding:16px;color:#E7E9EC;\">"
-        "<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px;\">"
-        f"<span style=\"color:{color};font-size:18px;\">●</span>"
-        f"<strong>{html.escape(row['model_id'])}</strong>"
-        "</div>"
-        f"{status_html}"
-        f"{prompt_text_html}"
-        f"<div style=\"font-size:13px;color:#9AA3AE;margin-bottom:8px;"
-        f"font-family:'IBM Plex Mono',monospace;\">{metrics}</div>"
-        f"<div style=\"white-space:pre-wrap;font-size:14px;\">{html.escape(row['response'] or '')}</div>"
-        f"{reasoning_html}"
-        f"{rag_html}"
-        f"<div style=\"font-size:12px;color:#7D8691;margin-top:10px;\">{html.escape(params_line)}</div>"
-        "</div>"
-    )
-
 
 # ---------------- Ergebnisse ----------------
 if st.session_state.results:
@@ -1134,6 +1181,16 @@ if st.session_state.results:
     }
     if dropped_by_model:
         st.caption(t("main.results.dropped_param_caption", models=", ".join(sorted(dropped_by_model))))
+
+    col_expand, col_collapse = st.columns(2)
+    if col_expand.button(t("main.results.expand_all"), use_container_width=True):
+        for r in st.session_state.results:
+            st.session_state[f"{ANSWER_KEY_PREFIX}{_card_key(r)}"] = True
+        st.rerun()
+    if col_collapse.button(t("main.results.collapse_all"), use_container_width=True):
+        for r in st.session_state.results:
+            st.session_state[f"{ANSWER_KEY_PREFIX}{_card_key(r)}"] = False
+        st.rerun()
 
     by_prompt: dict = {}
     for r in st.session_state.results:
@@ -1147,11 +1204,12 @@ if st.session_state.results:
         run_id_for_rating = rows_for_prompt[0]["run_id"]
 
         st.markdown(f"**{prompt_id} · {prompt_text}**")
-        cards = "".join(_render_result_card(r) for r in rows_for_prompt)
-        st.markdown(
-            f"<div style='display:flex;gap:16px;overflow-x:auto;padding-bottom:12px;'>{cards}</div>",
-            unsafe_allow_html=True,
-        )
+        grid_cols = None
+        for i, r in enumerate(rows_for_prompt):
+            if i % 3 == 0:
+                grid_cols = st.columns(3)
+            with grid_cols[i % 3]:
+                _render_card(st.container(border=True), r, _card_key(r))
 
         model_ids_here = [r["model_id"] for r in rows_for_prompt]
         current_best_model = next((r["model_id"] for r in rows_for_prompt if r.get("is_best")), None)
