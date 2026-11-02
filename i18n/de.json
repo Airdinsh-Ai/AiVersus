@@ -147,6 +147,7 @@
   "main.timeline.metric_help": "Generierungszeit/Tokens pro Sekunde spiegeln die Modell-Leistung - die Gesamtlatenz misst bei NVIDIA Build (Freikontingent) vor allem die Warteschlange.",
   "main.timeline.no_values_caption": "Für diese Metrik liegen bei den gewählten Modellen noch keine Werte vor.",
   "main.timeline.footer_caption": "{count} Lauf/Läufe gespeichert. Voraussetzung: Der Anbieter hält die Modell-ID stabil — bei einer Umbenennung reißt die Zeitreihe ab.",
+  "main.timeline.mixed_params_caption": "Nicht direkt vergleichbar: {models} haben Läufe mit unterschiedlichem Prompt-Text oder unterschiedlichen Parametern (temperature/top_p/max_tokens) in der Historie - dafür zeigt die Timeline getrennte Linien in derselben Farbe.",
   "main.timeline.wins_header": "**Siege pro Modell**",
   "main.timeline.no_wins_caption": "Noch keine 'Beste Antwort' markiert.",
 

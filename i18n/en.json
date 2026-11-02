@@ -147,6 +147,7 @@
   "main.timeline.metric_help": "Generation time/tokens per second reflect model performance - the total latency on NVIDIA Build (free tier) mostly reflects the queue.",
   "main.timeline.no_values_caption": "No values yet for this metric on the selected models.",
   "main.timeline.footer_caption": "{count} run(s) saved. Requires the provider to keep the model ID stable — a rename breaks the time series.",
+  "main.timeline.mixed_params_caption": "Not directly comparable: {models} have runs with different prompt text or different parameters (temperature/top_p/max_tokens) in their history - the timeline shows separate lines in the same colour for these.",
   "main.timeline.wins_header": "**Wins per model**",
   "main.timeline.no_wins_caption": "No 'best answer' marked yet.",
 

@@ -1297,22 +1297,38 @@ else:
         if hist.empty:
             st.caption(t("main.timeline.no_values_caption"))
         else:
-            # Pro (Lauf, Modell) EIN Punkt - nicht pro Minute (ein Lauf mit mehreren Prompts
-            # lief bisher teils ueber mehrere Minuten oder zwei Laeufe fielen in dieselbe
-            # Minute, dann verband die Linie p1/p2 desselben Laufs statt Lauf 1 mit Lauf 2).
-            # Spaeter einmal pro Prompt aggregierbar (prompt_text liegt jetzt pro Zeile vor),
-            # aber das ist eine eigene Ansicht, kein Ersatz fuer die Lauf-Zeitreihe hier.
-            per_run = (
-                hist.groupby(["run_id", "model_id"])
-                .agg(**{metric: (metric, "mean"), "timestamp": ("timestamp", "mean")})
-                .reset_index()
+            # Jede Zeile (run_id, model_id, prompt_id) ist bereits EIN Punkt (Primärschlüssel
+            # in runs.db) - keine Aggregation mehr nötig. Eine Linie darf aber nur Punkte mit
+            # gleichem (prompt_text, temperature, top_p, max_tokens) verbinden, sonst würde
+            # z.B. ein Zero-Shot- mit einem Few-Shot-Lauf desselben Modells oder ein Lauf mit
+            # max_tokens=1024 mit einem mit max_tokens=4096 verglichen, obwohl das nicht
+            # vergleichbar ist. "detail" splittet die Linie pro Kombination, "color" bleibt
+            # trotzdem das Modell (Farben konsistent mit dem Rest der App).
+            def _compare_params(raw) -> tuple:
+                try:
+                    parsed = json.loads(raw) if raw else {}
+                except (TypeError, ValueError):
+                    parsed = {}
+                return parsed.get("temperature"), parsed.get("top_p"), parsed.get("max_tokens")
+
+            cmp_params = hist["sent_params"].apply(_compare_params)
+            hist = hist.assign(
+                _cmp_temperature=[p[0] for p in cmp_params],
+                _cmp_top_p=[p[1] for p in cmp_params],
+                _cmp_max_tokens=[p[2] for p in cmp_params],
             )
-            chart = per_run.pivot(index="timestamp", columns="model_id", values=metric)
-            y_max = float(chart.max().max())
-            melted = chart.reset_index().melt(id_vars="timestamp", var_name="model_id", value_name=metric)
-            melted = melted.dropna(subset=[metric])  # leere Zellen aus dem pivot/melt-Rasterwechsel raus
+            hist["series_key"] = (
+                hist["prompt_text"].fillna("?") + " | T=" + hist["_cmp_temperature"].astype(str)
+                + " top_p=" + hist["_cmp_top_p"].astype(str) + " max_tokens=" + hist["_cmp_max_tokens"].astype(str)
+            )
+            series_per_model = hist.groupby("model_id")["series_key"].nunique()
+            mixed_models = sorted(series_per_model[series_per_model > 1].index)
+            if mixed_models:
+                st.caption(t("main.timeline.mixed_params_caption", models=", ".join(mixed_models)))
+
+            y_max = float(hist[metric].max())
             st.altair_chart(
-                alt.Chart(melted)
+                alt.Chart(hist)
                 .mark_line(point=True)
                 .encode(
                     # Wenige, lesbare Ticks statt einem Label pro Minute (Default von Altair
@@ -1321,6 +1337,8 @@ else:
                     x=alt.X("timestamp:T", axis=alt.Axis(format="%d.%m. %H:%M", tickCount=6)),
                     y=alt.Y(f"{metric}:Q", scale=alt.Scale(domain=[0, y_max * 1.1 if y_max > 0 else 1])),
                     color="model_id:N",
+                    detail="series_key:N",
+                    tooltip=["model_id", "prompt_id", "prompt_text", f"{metric}:Q", "timestamp:T"],
                 )
                 .properties(height=320),
                 use_container_width=True,
