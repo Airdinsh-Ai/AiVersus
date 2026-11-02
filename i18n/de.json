@@ -45,13 +45,15 @@
 
   "sidebar.pricing.dialog_title": "LLM Pricing",
   "sidebar.pricing.button": "LLM Pricing",
-  "sidebar.pricing.caption": "Preise nur eintragen, wenn auf einer offiziellen Anbieter-Seite verifiziert - mit Quelle und Stand-Datum. Unbekannt bleibt leer (wird als '–' angezeigt, nicht als 0).",
+  "sidebar.pricing.caption": "Preise nur eintragen, wenn auf einer offiziellen Anbieter-Seite verifiziert - mit Quelle und Stand-Datum. Unbekannt bleibt leer (wird als '–' angezeigt, nicht als 0). Echt kostenlose Modelle: \"Kostenlos\" ankreuzen statt 0 einzutragen - unbekannt ist nicht dasselbe wie kostenlos.",
   "sidebar.pricing.col_model": "Modell",
   "sidebar.pricing.col_input": "Input $/1M",
   "sidebar.pricing.col_output": "Output $/1M",
   "sidebar.pricing.col_source": "Quelle",
   "sidebar.pricing.col_updated": "Stand",
   "sidebar.pricing.col_updated_help": "z.B. 2026-11-02",
+  "sidebar.pricing.col_free": "Kostenlos",
+  "sidebar.pricing.col_free_help": "Echtes Free-Tier, nicht nur ein unbekannter Preis.",
   "sidebar.pricing.save": "Speichern",
   "sidebar.pricing.close": "Schließen",
 

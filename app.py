@@ -509,23 +509,24 @@ def _clean_text_cell(value) -> str | None:
 @st.dialog(t("sidebar.pricing.dialog_title"), width="large")
 def _pricing_dialog() -> None:
     st.caption(t("sidebar.pricing.caption"))
-    col_model, col_input, col_output, col_source, col_updated = (
+    col_model, col_input, col_output, col_source, col_updated, col_free = (
         t("sidebar.pricing.col_model"), t("sidebar.pricing.col_input"), t("sidebar.pricing.col_output"),
-        t("sidebar.pricing.col_source"), t("sidebar.pricing.col_updated"),
+        t("sidebar.pricing.col_source"), t("sidebar.pricing.col_updated"), t("sidebar.pricing.col_free"),
     )
     models_dict = st.session_state.pricing_data
     rows = [
         {col_model: m, col_input: v.get("input"), col_output: v.get("output"),
-         col_source: v.get("source") or "", col_updated: v.get("updated") or ""}
+         col_source: v.get("source") or "", col_updated: v.get("updated") or "", col_free: bool(v.get("free"))}
         for m, v in sorted(models_dict.items())
     ]
-    pricing_df = pd.DataFrame(rows, columns=[col_model, col_input, col_output, col_source, col_updated])
+    pricing_df = pd.DataFrame(rows, columns=[col_model, col_input, col_output, col_source, col_updated, col_free])
     edited = st.data_editor(
         pricing_df, num_rows="dynamic", use_container_width=True, key="pricing_editor",
         column_config={
             col_input: st.column_config.NumberColumn(format="%.4f"),
             col_output: st.column_config.NumberColumn(format="%.4f"),
             col_updated: st.column_config.TextColumn(help=t("sidebar.pricing.col_updated_help")),
+            col_free: st.column_config.CheckboxColumn(help=t("sidebar.pricing.col_free_help"), default=False),
         },
     )
     col_save, col_close = st.columns(2)
@@ -540,6 +541,7 @@ def _pricing_dialog() -> None:
                 "output": float(r[col_output]) if pd.notna(r[col_output]) else None,
                 "source": _clean_text_cell(r[col_source]),
                 "updated": _clean_text_cell(r[col_updated]),
+                "free": bool(r[col_free]) if pd.notna(r[col_free]) else False,
             }
         st.session_state.pricing_data = new_models
         save_pricing_file(new_models)
@@ -550,10 +552,13 @@ def _pricing_dialog() -> None:
         # gerade gespeicherten Preis im naechsten Rerun sofort wieder auf den alten Stand ziehen.
         for model_id in st.session_state.selected_models:
             priced = new_models.get(model_id)
-            if priced and priced.get("input") is not None and priced.get("output") is not None:
-                st.session_state.model_prices[model_id] = {"input": priced["input"], "output": priced["output"]}
-                st.session_state[f"price_in_{model_id}"] = priced["input"]
-                st.session_state[f"price_out_{model_id}"] = priced["output"]
+            if priced and (priced.get("free") or (priced.get("input") is not None and priced.get("output") is not None)):
+                st.session_state.model_prices[model_id] = {
+                    "input": priced.get("input") or 0.0, "output": priced.get("output") or 0.0,
+                    "free": priced.get("free", False),
+                }
+                st.session_state[f"price_in_{model_id}"] = priced.get("input") or 0.0
+                st.session_state[f"price_out_{model_id}"] = priced.get("output") or 0.0
         st.rerun()
     if col_close.button(t("sidebar.pricing.close"), use_container_width=True):
         st.rerun()
@@ -648,12 +653,16 @@ model_pick = col_pick.selectbox(
 if col_add.button(t("main.models.add_button"), disabled=not model_pick, use_container_width=True):
     st.session_state.selected_models.append(model_pick)
     priced = st.session_state.pricing_data.get(model_pick)
-    if priced and priced.get("input") is not None and priced.get("output") is not None:
-        st.session_state.model_prices[model_pick] = {"input": priced["input"], "output": priced["output"]}
+    if priced and (priced.get("free") or (priced.get("input") is not None and priced.get("output") is not None)):
+        st.session_state.model_prices[model_pick] = {
+            "input": priced.get("input") or 0.0, "output": priced.get("output") or 0.0,
+            "free": priced.get("free", False),
+        }
     else:
         legacy = PRICING_USD_PER_1M_TOKENS.get(model_pick)  # alte OpenAI/Gemini-IDs, meist kein Treffer
         st.session_state.model_prices[model_pick] = (
-            {"input": legacy[0], "output": legacy[1]} if legacy else {"input": 0.0, "output": 0.0}
+            {"input": legacy[0], "output": legacy[1], "free": False} if legacy
+            else {"input": 0.0, "output": 0.0, "free": False}
         )
     st.rerun()
 
@@ -672,7 +681,7 @@ if st.session_state.selected_models:
             f"<span style='color:{model_color(model_id)}; font-size:22px;'>●</span>", unsafe_allow_html=True,
         )
         col_name.write(model_id)
-        price = st.session_state.model_prices.setdefault(model_id, {"input": 0.0, "output": 0.0})
+        price = st.session_state.model_prices.setdefault(model_id, {"input": 0.0, "output": 0.0, "free": False})
         price["input"] = col_in.number_input(
             t("main.models.col_input"), value=price["input"], step=0.01, format="%.4f",
             key=f"price_in_{model_id}", label_visibility="collapsed",
@@ -806,10 +815,13 @@ def _cost_usd(model_id: str, tokens_in, tokens_out):
     """Kosten nach den in der Modell-Liste eingetragenen Preisen - gilt nur für diesen Lauf.
 
     None (nicht 0.0), wenn kein Preis eingetragen ist - unbekannt ist nicht dasselbe wie
-    kostenlos. Heuristik: 0.0/0.0 (der Vorgabewert ohne Treffer in pricing.py) gilt als
-    "kein Preis eingetragen"; sobald eines der beiden Felder > 0 ist, gilt der Preis als bekannt.
+    kostenlos. Ohne explizites Free-Tier-Kennzeichen (im Preis-Dialog gesetzt) gilt 0.0/0.0
+    weiterhin als "kein Preis eingetragen" (Heuristik, da das der Vorgabewert ohne Treffer
+    ist); ist "free" gesetzt, sind die Kosten unabhängig von den Zahlenfeldern 0.0.
     """
-    price = st.session_state.model_prices.get(model_id, {"input": 0.0, "output": 0.0})
+    price = st.session_state.model_prices.get(model_id, {"input": 0.0, "output": 0.0, "free": False})
+    if price.get("free"):
+        return 0.0
     if price["input"] == 0.0 and price["output"] == 0.0:
         return None
     if tokens_in is None or tokens_out is None:

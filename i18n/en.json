@@ -45,13 +45,15 @@
 
   "sidebar.pricing.dialog_title": "LLM Pricing",
   "sidebar.pricing.button": "LLM Pricing",
-  "sidebar.pricing.caption": "Only enter a price if you can verify it on an official provider page - with source and date. Leave unknown prices empty (shown as '-', not 0).",
+  "sidebar.pricing.caption": "Only enter a price if you can verify it on an official provider page - with source and date. Leave unknown prices empty (shown as '-', not 0). Genuinely free models: tick \"Free\" instead of entering 0 - unknown and free are not the same.",
   "sidebar.pricing.col_model": "Model",
   "sidebar.pricing.col_input": "Input $/1M",
   "sidebar.pricing.col_output": "Output $/1M",
   "sidebar.pricing.col_source": "Source",
   "sidebar.pricing.col_updated": "As of",
   "sidebar.pricing.col_updated_help": "e.g. 2026-11-02",
+  "sidebar.pricing.col_free": "Free",
+  "sidebar.pricing.col_free_help": "Genuinely free tier, not just an unknown price.",
   "sidebar.pricing.save": "Save",
   "sidebar.pricing.close": "Close",
 
