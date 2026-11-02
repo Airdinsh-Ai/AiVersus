@@ -141,6 +141,7 @@
   "main.results.best_answer_none": "Keine",
   "main.results.cost_caption": "Geschätzte Gesamtkosten dieses Laufs: ${cost} (deine Preise aus der Modell-Liste oben){note}",
   "main.results.cost_unknown_note": " (zzgl. {count} Antwort/en mit unbekanntem Preis, nicht eingerechnet)",
+  "main.results.prompt_text_expander": "Prompt-Text anzeigen",
   "main.results.table_expander": "Alle Ergebnisse als Tabelle",
   "main.results.expand_all": "Alle Antworten aufklappen",
   "main.results.collapse_all": "Alle Antworten zuklappen",

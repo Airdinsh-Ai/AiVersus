@@ -141,6 +141,7 @@
   "main.results.best_answer_none": "None",
   "main.results.cost_caption": "Estimated total cost of this run: ${cost} (your prices from the model list above){note}",
   "main.results.cost_unknown_note": " (plus {count} answer(s) with unknown price, not included)",
+  "main.results.prompt_text_expander": "Show prompt text",
   "main.results.table_expander": "All results as a table",
   "main.results.expand_all": "Expand all answers",
   "main.results.collapse_all": "Collapse all answers",

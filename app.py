@@ -1373,7 +1373,16 @@ if st.session_state.results:
         rows_for_prompt = by_prompt[prompt_id]
         run_id_for_rating = rows_for_prompt[0]["run_id"]
 
-        st.markdown(f"**{prompt_id} · {prompt_text}**")
+        st.markdown(f"**{prompt_id}**")
+        # Nur die Prompt-ID ist fett - ein mehrzeiliger Prompt-Text innerhalb von **...**
+        # zerreißt das Markdown (Fettschrift erstreckt sich nicht zuverlässig über
+        # Zeilenumbrüche). Der Text steht daher immer als eigene Zeile, bei langen/
+        # mehrzeiligen Prompts eingeklappt, statt die Kartenreihe optisch zu sprengen.
+        if len(prompt_text) > 100 or "\n" in prompt_text:
+            with st.expander(t("main.results.prompt_text_expander")):
+                st.text(prompt_text)
+        else:
+            st.caption(prompt_text)
         grid_cols = None
         for i, r in enumerate(rows_for_prompt):
             if i % 3 == 0:
