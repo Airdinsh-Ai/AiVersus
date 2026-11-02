@@ -57,10 +57,12 @@ from storage import RunStore
 st.set_page_config(page_title="AiVersus", page_icon="🧪", layout="wide")
 store = RunStore()
 
-if "rerun_count" not in st.session_state:
-    st.session_state.rerun_count = 0
-st.session_state.rerun_count += 1
-print(f"[{datetime.now(timezone.utc).isoformat()}] RERUN #{st.session_state.rerun_count}", flush=True)
+DEBUG = os.environ.get("AIVERSUS_DEBUG") == "1"
+if DEBUG:
+    if "rerun_count" not in st.session_state:
+        st.session_state.rerun_count = 0
+    st.session_state.rerun_count += 1
+    print(f"[{datetime.now(timezone.utc).isoformat()}] RERUN #{st.session_state.rerun_count}", flush=True)
 
 # Buttons/Eingaben mit Mindesthöhe 44px (Barrierefreiheit, siehe Design-Vorlage) - [theme] in
 # .streamlit/config.toml deckt Farben/Fonts/Radien ab, aber keine Mindesthöhen für Touch-Targets.
@@ -166,20 +168,6 @@ if "availability_run" not in st.session_state:
     st.session_state.availability_run = None
 if "pricing_data" not in st.session_state:
     st.session_state.pricing_data = load_pricing_file()
-if "pricing_dialog_last_seen" not in st.session_state:
-    st.session_state.pricing_dialog_last_seen = 0.0
-
-
-def _pricing_dialog_is_open() -> bool:
-    """True, solange der Pricing-Dialog zuletzt vor <2s neu gezeichnet wurde.
-
-    Ein reines Bool-Flag ("offen"/"geschlossen"), das nur beim Save-/Close-Klick
-    zurückgesetzt wird, bleibt beim Schließen über das native X/Escape hängen (dann
-    läuft kein Code mehr, der es zurücksetzt) - die Poll-Schleifen blieben für immer
-    pausiert. Ein Zeitfenster heilt das von selbst: Wird der Dialog nicht mehr neu
-    gezeichnet, "verfällt" die Sperre nach spätestens 2s von allein.
-    """
-    return (time.time() - st.session_state.pricing_dialog_last_seen) < 2.0
 
 
 def _original_message(e: Exception) -> str:
@@ -431,7 +419,13 @@ if st.sidebar.button(
         }
         st.rerun()
 
-if st.session_state.availability_run is not None:
+@st.fragment(run_every=0.5)
+def _availability_progress_fragment() -> None:
+    """Pollt nur sich selbst (run_every), statt mit time.sleep()+st.rerun() die ganze App
+
+    bei jedem Tick neu zu zeichnen - läuft nur, solange Futures offen sind (siehe Aufrufstelle
+    unten), und löst bei Abschluss genau einen vollen Rerun aus (st.rerun(scope="app")).
+    """
     avail_run = st.session_state.availability_run
     for future in [f for f in avail_run["pending"] if f.done()]:
         avail_run["pending"].discard(future)
@@ -460,10 +454,11 @@ if st.session_state.availability_run is not None:
         )
         st.session_state.availability_run = None
         st.sidebar.success(t("sidebar.availability.result", available=n_avail, unavailable=n_unavail, slow=n_slow))
-        st.rerun()
-    elif not _pricing_dialog_is_open():
-        time.sleep(0.5)
-        st.rerun()
+        st.rerun(scope="app")
+
+
+if st.session_state.availability_run is not None:
+    _availability_progress_fragment()
 
 # ---------------- Sidebar: LLM Pricing ----------------
 st.sidebar.divider()
@@ -471,13 +466,6 @@ st.sidebar.divider()
 
 @st.dialog(t("sidebar.pricing.dialog_title"), width="large")
 def _pricing_dialog() -> None:
-    # Solange der Dialog offen ist, sollen die Hintergrund-Poll-Schleifen (Benchmark/
-    # Verfügbarkeit) nicht per time.sleep()+st.rerun() weiterrennen - das riss den Dialog
-    # alle 0.4-0.5s neu auf ("flackert dauerhaft", siehe PROTOKOLL.md). Streamlit zeichnet
-    # diese Funktion neu, solange der Dialog offen ist - der Zeitstempel bleibt also
-    # "frisch", bis er beim Schließen (Save/Close oder X/Escape) nicht mehr aktualisiert
-    # wird und nach spätestens 2s von selbst verfällt.
-    st.session_state.pricing_dialog_last_seen = time.time()
     st.caption(t("sidebar.pricing.caption"))
     col_model, col_input, col_output, col_source, col_updated = (
         t("sidebar.pricing.col_model"), t("sidebar.pricing.col_input"), t("sidebar.pricing.col_output"),
@@ -513,10 +501,8 @@ def _pricing_dialog() -> None:
             }
         st.session_state.pricing_data = new_models
         save_pricing_file(new_models)
-        st.session_state.pricing_dialog_last_seen = 0.0  # sofort verfallen lassen, nicht erst nach 2s
         st.rerun()
     if col_close.button(t("sidebar.pricing.close"), use_container_width=True):
-        st.session_state.pricing_dialog_last_seen = 0.0
         st.rerun()
 
 
@@ -925,7 +911,13 @@ if stop_clicked and run_active:
     run["executor"].shutdown(wait=False, cancel_futures=True)
     st.rerun()
 
-if st.session_state.run is not None:
+@st.fragment(run_every=0.4)
+def _benchmark_progress_fragment() -> None:
+    """Pollt nur sich selbst (run_every), statt mit time.sleep()+st.rerun() die ganze App
+
+    bei jedem Tick neu zu zeichnen - läuft nur, solange Futures offen sind (siehe Aufrufstelle
+    unten), und löst bei Abschluss genau einen vollen Rerun aus (st.rerun(scope="app")).
+    """
     run = st.session_state.run
 
     for future in [f for f in run["pending"] if f.done()]:
@@ -985,10 +977,11 @@ if st.session_state.run is not None:
                 "success", t("main.run.message.done", done=run["done_count"], total=run["total"]),
             )
         st.session_state.run = None
-        st.rerun()  # Start/Stop-Button-Zustand sofort neu zeichnen, nicht erst beim nächsten Klick
-    elif not _pricing_dialog_is_open():
-        time.sleep(0.4)
-        st.rerun()
+        st.rerun(scope="app")  # Start/Stop-Button-Zustand sofort neu zeichnen, nicht erst beim nächsten Klick
+
+
+if st.session_state.run is not None:
+    _benchmark_progress_fragment()
 
 def _fmt(value, suffix: str = "", digits: int = 2) -> str:
     if value is None:
