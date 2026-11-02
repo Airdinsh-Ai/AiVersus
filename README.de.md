@@ -62,7 +62,13 @@ der sich in der Sidebar anpassen lässt).
 
 1. API-Key eintragen, Verbindung testen, dann ein oder mehrere Modelle unter **Modelle**
    hinzufügen.
-2. Einen oder mehrere Prompts in der **Prompt-Suite** schreiben.
+2. Einen oder mehrere Prompts in der **Prompt-Suite** schreiben. Die beiden
+   mitgelieferten Standard-Prompts zeigen den Unterschied zwischen den
+   Techniken-Etiketten: `p1` ist Zero-Shot (direkte Frage, keine Beispiele),
+   `p2` ist echtes Few-Shot - eine Stimmungs-Klassifizierung (positiv/negativ/
+   neutral) mit drei vorgemachten Beispielen, bevor das Modell die letzte,
+   noch unmarkierte Aussage einordnen soll. Das Etikett nur setzen, wenn es
+   zum jeweiligen Prompt wirklich passt.
 3. Die gemeinsamen **Parameter** setzen (temperature, top_p, max_tokens - Standard 4096,
    bei sichtbarem "Abgeschnitten"-Badge auf einer Karte höher setzen -, optionaler
    System-Prompt, optional fixierter Seed).

@@ -298,9 +298,32 @@ def save_settings() -> None:
 
 _saved_settings = load_settings()
 if "prompts" not in st.session_state:
+    # p1: Zero-Shot (direkte Frage, keine Beispiele) - Technik-Etikett passt zum Prompt.
+    # p2: echtes Few-Shot (drei vorgemachte Beispiele vor der eigentlichen Aufgabe), siehe
+    # README-Abschnitt "Nutzung" - vorher stand hier "Schreibe eine Python-Funktion für
+    # Fibonacci." mit dem Etikett "Few-Shot Prompting", obwohl der Prompt gar keine Beispiele
+    # enthielt und damit eigentlich Zero-Shot war.
     st.session_state.prompts = _saved_settings.get("prompts") or [
         {"id": "p1", "text": "Erkläre RAG in 3 Sätzen.", "technique": "Zero-Shot Prompting"},
-        {"id": "p2", "text": "Schreibe eine Python-Funktion für Fibonacci.", "technique": "Few-Shot Prompting"},
+        {
+            "id": "p2",
+            "text": (
+                "Klassifiziere die Stimmung (positiv/negativ/neutral) der folgenden Aussage.\n\n"
+                "Beispiel 1:\n"
+                "Aussage: \"Der Support hat mir super schnell geholfen, bin begeistert!\"\n"
+                "Stimmung: positiv\n\n"
+                "Beispiel 2:\n"
+                "Aussage: \"Die Lieferung kam drei Wochen zu spät und niemand hat reagiert.\"\n"
+                "Stimmung: negativ\n\n"
+                "Beispiel 3:\n"
+                "Aussage: \"Die Bestellung ist heute angekommen, Inhalt wie beschrieben.\"\n"
+                "Stimmung: neutral\n\n"
+                "Jetzt du:\n"
+                "Aussage: \"Die App ist ok, aber der Login hängt sich ständig auf.\"\n"
+                "Stimmung:"
+            ),
+            "technique": "Few-Shot Prompting",
+        },
     ]
 if "results" not in st.session_state:
     st.session_state.results = []

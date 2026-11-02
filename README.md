@@ -57,7 +57,12 @@ for that with a long default timeout, which you can adjust in the sidebar).
 ## Usage
 
 1. Enter your API key, test the connection, then add one or more models in **Models**.
-2. Write one or more prompts in the **Prompt Suite**.
+2. Write one or more prompts in the **Prompt Suite**. The two shipped default
+   prompts show the difference between the technique labels: `p1` is
+   zero-shot (a direct question, no examples), `p2` is genuine few-shot - a
+   sentiment-classification prompt (positive/negative/neutral) with three
+   worked examples before the model has to label the final, unlabelled
+   statement. Only set the label when it actually fits the prompt.
 3. Set the shared **Parameters** (temperature, top_p, max_tokens - default 4096, raise it
    if a card shows the "Truncated" badge - optional system prompt, optional fixed seed).
 4. Click **Start benchmark**. Results appear as cards per prompt as soon as each model
