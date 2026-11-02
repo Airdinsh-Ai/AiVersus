@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# AiVersus – LLM-Vergleich (Evo V0.4)
+# AiVersus – LLM-Vergleich (Evo V0.5)
 # © 2026 Airdinsh (Erdinç Arslan) · MIT License · Masterschool AI Engineering Track
 # Signlab@gmx.de · https://Airdinsh.com
 #
