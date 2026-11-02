@@ -1297,13 +1297,22 @@ else:
         if hist.empty:
             st.caption(t("main.timeline.no_values_caption"))
         else:
-            chart = (
-                hist.groupby([hist["timestamp"].dt.floor("min"), "model_id"])[metric].mean()
-                .reset_index().pivot(index="timestamp", columns="model_id", values=metric)
+            # Pro (Lauf, Modell) EIN Punkt - nicht pro Minute (ein Lauf mit mehreren Prompts
+            # lief bisher teils ueber mehrere Minuten oder zwei Laeufe fielen in dieselbe
+            # Minute, dann verband die Linie p1/p2 desselben Laufs statt Lauf 1 mit Lauf 2).
+            # Spaeter einmal pro Prompt aggregierbar (prompt_text liegt jetzt pro Zeile vor),
+            # aber das ist eine eigene Ansicht, kein Ersatz fuer die Lauf-Zeitreihe hier.
+            per_run = (
+                hist.groupby(["run_id", "model_id"])
+                .agg(**{metric: (metric, "mean"), "timestamp": ("timestamp", "mean")})
+                .reset_index()
             )
+            chart = per_run.pivot(index="timestamp", columns="model_id", values=metric)
             y_max = float(chart.max().max())
+            melted = chart.reset_index().melt(id_vars="timestamp", var_name="model_id", value_name=metric)
+            melted = melted.dropna(subset=[metric])  # leere Zellen aus dem pivot/melt-Rasterwechsel raus
             st.altair_chart(
-                alt.Chart(chart.reset_index().melt(id_vars="timestamp", var_name="model_id", value_name=metric))
+                alt.Chart(melted)
                 .mark_line(point=True)
                 .encode(
                     x="timestamp:T",
