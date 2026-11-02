@@ -75,17 +75,28 @@ bekommen den Status "abgebrochen".
 die ganze Seite, und lösen bei Abschluss genau einen vollen `st.rerun(scope="app")`
 aus.
 
-## 4. Datenfluss B — RAG (optional, ⚠️ nie live getestet)
+## 4. Datenfluss B — RAG (optional, live getestet am 02.11.2026)
 
 ```
+Embedding-Modelle vor der Auswahl per Mini-Call prüfen (analog zur Chat-
+Verfügbarkeitsprüfung, Ergebnis in data/embedding_availability.json gecacht) -
+nicht erreichbare ausgeblendet, Standardauswahl = zuletzt erfolgreiches Modell
+        ↓
 Dokument hochladen (PDF/TXT/MD) → Text extrahieren (pypdf für PDF, UTF-8 sonst)
         ↓
 Chunking: Sliding-Window, 1000 Zeichen, 150 Zeichen Überlappung
         ↓
-Embedding über ein live aus dem Katalog gewähltes NVIDIA-Build-Modell
-(fetch_embedding_models() - kein fest eingetragener Modellname)
+Embedding über das gewählte NVIDIA-Build-Modell (fetch_embedding_models() -
+kein fest eingetragener Modellname); 404 beim Indexieren selbst (ungeprüftes
+oder frisch abgeschaltetes Modell) zeigt den Hinweis "anderes Embedding-Modell
+wählen" und trägt das Modell direkt in den Verfügbarkeits-Cache ein
         ↓
-ChromaDB (data/rag_store/, Collection "documents", Upsert mit sha256-IDs)
+ChromaDB (data/rag_store/, Collection "documents", Upsert mit sha256-IDs) - die
+Collection ist über ihre Metadaten an genau ein Embedding-Modell gebunden; ein
+Wechsel bei bereits vorhandenen Chunks wird verweigert (RagIndex löst
+EmbedModelMismatch aus, UI bietet "Index leeren und Modell X übernehmen" an),
+statt Vektoren unterschiedlicher Modelle (oft unterschiedliche Dimension) in
+derselben Collection zu mischen
         ↓
 Bei aktivem RAG, einmal pro Prompt (nicht pro Modell): Top-K ähnlichste Chunks
 abrufen (Default 4, einstellbar 1-10)
@@ -93,14 +104,24 @@ abrufen (Default 4, einstellbar 1-10)
 Kontext wird vor die Frage gesetzt ("beantworte ausschließlich auf Basis des
 Kontexts, sonst sag das ausdrücklich") → normaler Modellaufruf (Datenfluss A)
         ↓
-Ergebniszeile: injected_context = true, retrieved_sources = ["Datei#Chunk-Index", …]
+Ergebniszeile: injected_context = true, retrieved_sources = ["Datei#Chunk-Index", …],
+retrieved_chunks = [{"source", "chunk_index", "text"}, …] (nur für die Karte in
+diesem Lauf, nicht in runs.db persistiert)
+        ↓
+Ergebniskarte zeigt Quelle+Chunk-Index je Treffer, den Chunk-Text selbst per
+Toggle pro Chunk, standardmäßig eingeklappt
 ```
 
-Die einzelnen Bausteine (Chunking, Embedding-Aufruf, ChromaDB-Zugriff,
-Katalog-Filter für Embedding-Modelle) sind mit gemockten Clients getestet. **Die
-volle Kette mit einem echten `st.file_uploader`-Upload und einem echten NVIDIA-
-Build-Key wurde bisher kein einziges Mal live durchgespielt** (siehe PROTOKOLL.md,
-"LIVE-TEST OFFEN" sowie Backlog).
+Ein Live-Test am 02.11.2026 (echter NVIDIA-Build-Key, echter `st.file_uploader`-
+Upload) deckte drei Mängel auf, die alle in dieser Sitzung behoben wurden: ein im
+Katalog gelistetes, aber für den Account nicht freigeschaltetes Embedding-Modell
+fiel erst beim Indexieren mit einer generischen Fehlermeldung auf (→ Mini-Call-
+Prüfung, siehe oben); ein Wechsel des Embedding-Modells schrieb stillschweigend in
+dieselbe Collection weiter (→ `EmbedModelMismatch`); die Ergebniskarte zeigte nur
+Quelle+Chunk-Index, nicht den Chunk-Text selbst (→ Toggle in der Karte). Die drei
+Fixes wurden in dieser Sitzung selbst nur gegen einen lokalen Mock-Server mit
+simulierten Embeddings nachgewiesen (`streamlit.testing.v1.AppTest`, kein echter
+NVIDIA-Build-Key in dieser Umgebung) - siehe Backlog für die Commit-Referenzen.
 
 ## 5. Dateien
 
@@ -111,7 +132,7 @@ Build-Key wurde bisher kein einziges Mal live durchgespielt** (siehe PROTOKOLL.m
 | `chat_client.py` | `call_chat_streaming()`: Streaming-Aufruf in eigenem Thread, zwei Zeitüberschreitungen, Abbruch, 400-Retry ohne abgelehnten Parameter |
 | `rag.py` | Textextraktion, Chunking, Embedding, ChromaDB (`RagIndex`), Prompt-Bau mit Kontext |
 | `storage.py` | `RunStore`: Ergebniszeilen in SQLite speichern/laden, Migrationen, Sterne/Beste-Antwort, Timeline-Abfragen |
-| `i18n.py` + `i18n/en.json` + `i18n/de.json` | Übersetzungsfunktion `t(key, **kwargs)`, Englisch als Fallback; beide Sprachdateien aktuell mit je 149 Schlüsseln vollständig synchron |
+| `i18n.py` + `i18n/en.json` + `i18n/de.json` | Übersetzungsfunktion `t(key, **kwargs)`, Englisch als Fallback; beide Sprachdateien aktuell mit je 161 Schlüsseln vollständig synchron |
 
 `pricing.py` (feste Preistabelle) wurde entfernt - Preise kommen ausschließlich noch
 über den Pricing-Dialog/`pricing.json` (siehe Abschnitt 8).
@@ -133,14 +154,22 @@ prompt_text, finish_reason`
 - `prompt_text` und `finish_reason` wurden nachträglich per `ALTER TABLE` ergänzt
   (siehe `MIGRATIONS` in `storage.py`) - bei Zeilen aus der Zeit davor sind sie
   `NULL`.
-- `retrieved_sources`: JSON-Liste von `"Dateiname#Chunk-Index"`.
+- `retrieved_sources`: JSON-Liste von `"Dateiname#Chunk-Index"`. Der volle
+  Chunk-Text (`retrieved_chunks` in der Ergebniszeile, für die Karte) wird NICHT
+  mitgespeichert - nur für den Lauf im Session-State, nicht Teil des Schemas.
 
-**ChromaDB (`data/rag_store/`):** Collection `documents`, je Chunk die Metadaten
-`source` und `chunk_index`, IDs als sha256 über Dateiname+Index+Textanfang.
+**ChromaDB (`data/rag_store/`):** Collection `documents`, Collection-Metadaten
+`{"embed_model": <Modell-ID>}` (siehe Abschnitt 4 - bindet die Collection an genau
+ein Embedding-Modell), je Chunk die Dokument-Metadaten `source` und `chunk_index`,
+IDs als sha256 über Dateiname+Index+Textanfang.
 
 **`data/availability.json`:** `{"checked_at": <ISO-Zeitstempel oder null>, "models":
 {model_id: {"status": "available"|"unavailable"|"slow", "detail": <Fehlertext oder
-null>}}}`.
+null>}}}` - Chat-Modelle.
+
+**`data/embedding_availability.json`:** gleiches Format wie `availability.json`,
+eigene Datei für die Embedding-Modelle (siehe Abschnitt 4) - Chat- und
+Embedding-Modelle teilen sich keinen Namensraum und werden unabhängig geprüft.
 
 **`data/pricing.json`:** `{"models": {model_id: {"input": <$/1M Tokens oder null>,
 "output": <… oder null>, "source": <Text oder null>, "updated": <Text oder null>,
@@ -148,14 +177,15 @@ null>}}}`.
 eingetragen hat (aktuell leer, siehe Backlog).
 
 **`data/settings.json`:** `{"prompts": […], "selected_models": […],
-"model_prices": {…}}` - bewusst keine API-Keys und keine Ergebnisse; Keys bleiben
-ausschließlich im Session-State, Ergebnisse liegen in `runs.db`.
+"model_prices": {…}, "last_successful_embed_model": <Modell-ID oder null>}` -
+bewusst keine API-Keys und keine Ergebnisse; Keys bleiben ausschließlich im
+Session-State, Ergebnisse liegen in `runs.db`.
 
 ## 7. `data/` und Umgebungsvariablen
 
 | Variable | Standard | Zweck |
 | --- | --- | --- |
-| `AIVERSUS_DATA_DIR` | `<Projektordner>/data` | Überschreibt, wo `runs.db`, `availability.json`, `pricing.json`, `settings.json` und `rag_store/` liegen |
+| `AIVERSUS_DATA_DIR` | `<Projektordner>/data` | Überschreibt, wo `runs.db`, `availability.json`, `embedding_availability.json`, `pricing.json`, `settings.json` und `rag_store/` liegen |
 | `AIVERSUS_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Überschreibt die NVIDIA-Build-Basis-URL |
 
 Beide Variablen existieren ausschließlich zur Testisolation: jeder Test/Mock-Lauf
@@ -215,8 +245,10 @@ Schlüssel existiert nur in einer Sprache).
 - Der Verbindungstest probiert bis zu 5 Kandidaten nacheinander mit dem vollen,
   in der Sidebar eingestellten Zeitlimit (Standard 300s bis zum ersten Token) -
   kann sich dadurch stark summieren (siehe Backlog).
-- RAG ist implementiert, aber nie mit einem echten Datei-Upload und einem echten
-  Key live durchgespielt worden (siehe Abschnitt 4).
+- RAG ist am 02.11.2026 live getestet worden (echter Key, echter Upload); die
+  dabei gefundenen drei Mängel sind behoben (siehe Abschnitt 4), die Fixes selbst
+  aber in dieser Sitzung nur gegen einen Mock-Server nachgewiesen, nicht erneut
+  mit einem echten Key.
 - Reasoning-Tokens kommen, falls vorhanden, aus
   `usage.completion_tokens_details.reasoning_tokens` - nicht gegen jedes
   Reasoning-Modell im Katalog verifiziert.

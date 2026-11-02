@@ -8,7 +8,6 @@ Abweichungen gilt der Code.
 | Item | Notiz |
 | --- | --- |
 | Verbindungstest: zu lange Wartezeit | Probiert bis zu 5 Kandidaten nacheinander, jeder mit dem vollen, in der Sidebar eingestellten `first_token_timeout_s` (Standard 300s) - im ungünstigen Fall (mehrere nicht erreichbare Modelle vor dem ersten Treffer) kann das sehr lange dauern, bevor überhaupt ein Ergebnis erscheint (`app.py`, Verbindungstest-Schleife) |
-| RAG live testen | Chunking, Embedding-Aufruf, ChromaDB-Zugriff und Katalog-Filter sind einzeln mit gemockten Clients getestet; die volle Kette mit echtem `st.file_uploader`-Upload und echtem NVIDIA-Build-Key wurde noch nie durchgespielt (siehe `PROTOKOLL.md`, "LIVE-TEST OFFEN") |
 | Preise mit Quelle und Datum | `pricing.json` ist aktuell leer vorbefüllt - für NVIDIA Build wurde keine auffindbare, offizielle Preistabelle gefunden (siehe `PROTOKOLL.md`); die meisten Modelle haben daher weiterhin keinen echten, quellenbelegten Preis |
 | Comparison Table (Kursabgabe) | **Offene Entscheidung:** Die Comparison Table der ursprünglichen Aufgabe verlangt 5 konkrete OpenAI-/Google-Modelle, die App spricht aber inzwischen ausschließlich NVIDIA Build (siehe Entscheidungshistorie, 01.11.2026). Noch nicht entschieden, wie die Tabelle trotzdem befüllt wird - z.B. mit NVIDIA-Build-Gegenstücken statt der exakt vorgegebenen Modelle, oder mit einer befristeten Direktanbindung nur für diesen einen Abgabeschritt |
 | Projekt-Präsentation | Noch nicht begonnen |
@@ -16,12 +15,13 @@ Abweichungen gilt der Code.
 | Ordner aus dem Kursprojekt verschieben | `Privat/AiVersus` liegt noch unter `PythonProject8_Boolsche_Funktionen` (Name einer alten, unabhängigen Bootcamp-Übung) - ein eigenständiges uv-Projekt mit eigenem Git-Repo, aber physisch noch am falschen Ort verschachtelt |
 | "Alle Läufe fehlgeschlagen" nicht grün melden | Die Abschlussmeldung nach einem Lauf prüft nur, ob der Nutzer abgebrochen hat (`run["cancelled"]`), nicht ob überhaupt ein Call erfolgreich war - sind alle Zeilen `ok = False`, erscheint trotzdem die grüne Erfolgsmeldung "Fertig - N/N Calls" statt einer Warnung (`app.py`, `_benchmark_progress_fragment`) |
 
-## Bereits erledigt (zur Einordnung - zwei der oben für dieses Dokument vorgegebenen Themen sind beim Code-Abgleich bereits gelöst)
+## Bereits erledigt (zur Einordnung - zum Zeitpunkt des Code-Abgleichs bereits gelöste Themen)
 
 | Item | Wann/wie gelöst |
 | --- | --- |
 | Timeline-Vergleichbarkeit nach Parametern | Im Rahmen dieser Doku-Sitzung behoben (Commit `f3cf481`, 02.11.2026): eine Linie verbindet nur noch Läufe mit gleichem `prompt_text` und gleichen `temperature`/`top_p`/`max_tokens`; Parameter lagen bereits in `sent_params`/`prompt_text` pro Zeile vor, keine Migration nötig |
 | Few-Shot-Etikett bei p2 | Im Rahmen dieser Doku-Sitzung behoben (Commit `6a172e3`, 02.11.2026): der mitgelieferte Standard-Prompt `p2` enthielt keine Beispiele und war trotzdem als "Few-Shot Prompting" etikettiert - ersetzt durch ein echtes Few-Shot-Beispiel (Stimmungs-Klassifizierung mit drei vorgemachten Beispielen). Bleibt ein manuell frei wählbares Etikett ohne automatische Prüfung gegen den Prompt-Text - das gilt weiterhin für jeden selbst geschriebenen Prompt |
+| RAG live getestet (02.11.2026) | Drei Befunde aus dem Live-Test behoben, je ein Commit: (1) Embedding-Modelle werden jetzt vor dem Indexieren per Mini-Call geprüft (analog zur Chat-Verfügbarkeitsprüfung), nicht erreichbare ausgeblendet, Standard ist das zuletzt erfolgreiche Modell (Commit `741481d`); (2) die ChromaDB-Collection ist jetzt über ihre Metadaten an genau ein Embedding-Modell gebunden - ein Wechsel bei vorhandenen Chunks wird verweigert (`EmbedModelMismatch`) statt leise unterschiedliche Vektor-Dimensionen zu mischen (Commit `8d585c8`); (3) die Ergebniskarte zeigt zusätzlich zur Quelle jetzt auch den abgerufenen Chunk-Text, pro Chunk eingeklappt per Toggle (Commit `199e9af`). Die drei Fixes selbst wurden in dieser Sitzung nur gegen einen lokalen Mock-Server mit simulierten Embeddings nachgewiesen (`streamlit.testing.v1.AppTest`, kein echter NVIDIA-Build-Key in dieser Umgebung) - der Live-Test mit echtem Key/Upload, der diese drei Befunde ursprünglich lieferte, lief separat |
 
 ## Entscheidungshistorie (verworfen oder ersetzt — nur hier dokumentiert)
 
