@@ -94,6 +94,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 AVAILABILITY_PATH = os.path.join(DATA_DIR, "availability.json")
 AVAILABILITY_CHECK_TIMEOUT_S = 20.0  # kurzes Zeitfenster pro Modell - reicht für den Mini-Call
 PRICING_JSON_PATH = os.path.join(DATA_DIR, "pricing.json")
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
 store = RunStore(db_path=os.path.join(DATA_DIR, "runs.db"))
 TECHNIQUES = ["Zero-Shot Prompting", "Few-Shot Prompting", "Chain-of-Thought Prompting", t("main.prompts.other_technique")]
@@ -151,8 +152,30 @@ def save_pricing_file(models: dict) -> None:
         json.dump({"models": models}, f, ensure_ascii=False, indent=2)
 
 
+def load_settings() -> dict:
+    """{"prompts", "selected_models", "model_prices"} - nie API-Keys, die bleiben nur im Session-State."""
+    if not os.path.exists(SETTINGS_PATH):
+        return {}
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_settings() -> None:
+    data = {
+        "prompts": st.session_state.prompts,
+        "selected_models": st.session_state.selected_models,
+        "model_prices": st.session_state.model_prices,
+    }
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+_saved_settings = load_settings()
 if "prompts" not in st.session_state:
-    st.session_state.prompts = [
+    st.session_state.prompts = _saved_settings.get("prompts") or [
         {"id": "p1", "text": "Erkläre RAG in 3 Sätzen.", "technique": "Zero-Shot Prompting"},
         {"id": "p2", "text": "Schreibe eine Python-Funktion für Fibonacci.", "technique": "Few-Shot Prompting"},
     ]
@@ -161,9 +184,9 @@ if "results" not in st.session_state:
 if "unavailable_models" not in st.session_state:
     st.session_state.unavailable_models = set()
 if "selected_models" not in st.session_state:
-    st.session_state.selected_models = []
+    st.session_state.selected_models = _saved_settings.get("selected_models", [])
 if "model_prices" not in st.session_state:
-    st.session_state.model_prices = {}
+    st.session_state.model_prices = _saved_settings.get("model_prices", {})
 if "last_successful_test_model" not in st.session_state:
     st.session_state.last_successful_test_model = None
 if "run" not in st.session_state:
@@ -681,6 +704,7 @@ if st.button(t("main.prompts.add_button")):
     )
     st.rerun()
 
+save_settings()  # Prompt-Suite, Modelle und Preise sind an dieser Stelle fuer diesen Lauf final
 st.divider()
 prompts = [p for p in st.session_state.prompts if p["text"].strip()]
 st.write(t("main.summary", models=len(selected), prompts=len(prompts), calls=len(selected) * len(prompts)))
