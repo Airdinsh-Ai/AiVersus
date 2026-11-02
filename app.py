@@ -770,7 +770,7 @@ def _pricing_dialog() -> None:
     ]
     pricing_df = pd.DataFrame(rows, columns=[col_model, col_input, col_output, col_source, col_updated, col_free])
     edited = st.data_editor(
-        pricing_df, num_rows="dynamic", use_container_width=True, key="pricing_editor",
+        pricing_df, num_rows="dynamic", width="stretch", key="pricing_editor",
         column_config={
             col_input: st.column_config.NumberColumn(format="%.4f"),
             col_output: st.column_config.NumberColumn(format="%.4f"),
@@ -779,7 +779,7 @@ def _pricing_dialog() -> None:
         },
     )
     col_save, col_close = st.columns(2)
-    if col_save.button(t("sidebar.pricing.save"), type="primary", use_container_width=True):
+    if col_save.button(t("sidebar.pricing.save"), type="primary", width="stretch"):
         new_models = {}
         for _, r in edited.iterrows():
             model_name = str(r[col_model] or "").strip()
@@ -809,7 +809,7 @@ def _pricing_dialog() -> None:
                 st.session_state[f"price_in_{model_id}"] = priced.get("input") or 0.0
                 st.session_state[f"price_out_{model_id}"] = priced.get("output") or 0.0
         st.rerun()
-    if col_close.button(t("sidebar.pricing.close"), use_container_width=True):
+    if col_close.button(t("sidebar.pricing.close"), width="stretch"):
         st.rerun()
 
 
@@ -882,7 +882,7 @@ else:
         except EmbedModelMismatch as e:
             st.sidebar.error(t("sidebar.rag.embed_mismatch", stored=e.stored_model, requested=e.requested_model))
             if st.sidebar.button(
-                t("sidebar.rag.embed_mismatch_clear_button", requested=embed_model), use_container_width=True,
+                t("sidebar.rag.embed_mismatch_clear_button", requested=embed_model), width="stretch",
             ):
                 clear_persisted_collection(os.path.join(DATA_DIR, "rag_store"), embed_model=embed_model)
                 get_index.clear()  # verworfene RagIndex-Instanzen (alte Collection-Metadaten) nicht weiter cachen
@@ -894,7 +894,7 @@ else:
                 t("sidebar.rag.upload_label"), type=["pdf", "txt", "md"], accept_multiple_files=True,
             )
             col_build, col_clear = st.sidebar.columns(2)
-            if col_build.button(t("sidebar.rag.build_button"), disabled=not uploads, use_container_width=True):
+            if col_build.button(t("sidebar.rag.build_button"), disabled=not uploads, width="stretch"):
                 with st.sidebar, st.spinner(t("sidebar.rag.build_spinner")):
                     any_ok = False
                     for f in uploads:
@@ -914,7 +914,7 @@ else:
                                 st.sidebar.error(f"{f.name}: {describe_api_error(e)}")
                     if any_ok:
                         st.session_state.last_successful_embed_model = embed_model
-            if col_clear.button(t("sidebar.rag.clear_button"), use_container_width=True):
+            if col_clear.button(t("sidebar.rag.clear_button"), width="stretch"):
                 index.clear()
 
             for name, n in index.sources().items():
@@ -963,7 +963,7 @@ model_pick = col_pick.selectbox(
     key="model_picker", label_visibility="collapsed",
     format_func=lambda m: f"{m}{slow_suffix}" if m in slow_models else m,
 )
-if col_add.button(t("main.models.add_button"), disabled=not model_pick, use_container_width=True):
+if col_add.button(t("main.models.add_button"), disabled=not model_pick, width="stretch"):
     st.session_state.selected_models.append(model_pick)
     priced = st.session_state.pricing_data.get(model_pick)
     if priced and (priced.get("free") or (priced.get("input") is not None and priced.get("output") is not None)):
@@ -1361,11 +1361,11 @@ if st.session_state.results:
         st.caption(t("main.results.dropped_param_caption", models=", ".join(sorted(dropped_by_model))))
 
     col_expand, col_collapse = st.columns(2)
-    if col_expand.button(t("main.results.expand_all"), use_container_width=True):
+    if col_expand.button(t("main.results.expand_all"), width="stretch"):
         for r in st.session_state.results:
             st.session_state[f"{ANSWER_KEY_PREFIX}{_card_key(r)}"] = True
         st.rerun()
-    if col_collapse.button(t("main.results.collapse_all"), use_container_width=True):
+    if col_collapse.button(t("main.results.collapse_all"), width="stretch"):
         for r in st.session_state.results:
             st.session_state[f"{ANSWER_KEY_PREFIX}{_card_key(r)}"] = False
         st.rerun()
@@ -1455,7 +1455,7 @@ if st.session_state.results:
         display_df = df[table_cols].copy()
         for col in int_cols | cost_cols | float_cols:
             display_df[col] = display_df[col].apply(lambda v, c=col: _fmt_table_value(v, c))
-        st.dataframe(display_df, use_container_width=True)
+        st.dataframe(display_df, width="stretch")
 
     run_id = st.session_state.results[0]["run_id"]
     col_json, col_csv = st.columns(2)
@@ -1545,7 +1545,7 @@ else:
                     tooltip=["model_id", "prompt_id", "prompt_text", f"{metric}:Q", "timestamp:T"],
                 )
                 .properties(height=320),
-                use_container_width=True,
+                width="stretch",
             )
             st.caption(t("main.timeline.footer_caption", count=store.run_count()))
 
