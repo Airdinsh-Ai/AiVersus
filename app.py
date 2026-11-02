@@ -1539,4 +1539,8 @@ else:
     if wins.empty:
         st.caption(t("main.timeline.no_wins_caption"))
     else:
-        st.bar_chart(wins.set_index("model_id")["wins"])
+        # horizontal=True statt vertikal - bei vielen Modellen (viele Balken auf fester
+        # Chart-Breite verteilt) wurden die Balken sonst immer schmaler/gestaucht; bei
+        # horizontalen Balken bleibt die Balkenbreite (=Chart-Breite) fest, nur die Chart-
+        # Höhe wächst mit der Modellanzahl - und die Werte sind am Balken besser lesbar.
+        st.bar_chart(wins.set_index("model_id")["wins"], horizontal=True)
